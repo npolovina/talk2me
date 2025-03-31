@@ -1,7 +1,9 @@
-# .github/workflows/build.yml
-name: Build and Push Images
+# .github/workflows/build-images.yml
+name: 2. Build and Push Images
 
 on:
+  workflow_run:
+    workflows: ["1. EKS Cluster Setup"]
   push:
     branches: [ main ]
     paths-ignore:

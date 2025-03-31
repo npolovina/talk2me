@@ -1,6 +1,18 @@
 name: EKS Cluster Setup
 
 on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
     inputs:
       cluster_name:
@@ -30,6 +42,8 @@ on:
 
 jobs:
   setup-eks:
+    # Only run if the build workflow was successful or if manually triggered
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -43,7 +57,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ github.event.inputs.region }}
+          aws-region: ${{ github.event.inputs.region || secrets.AWS_REGION }}
 
       - name: Install eksctl
         run: |
@@ -63,22 +77,31 @@ jobs:
 
       - name: Create EKS cluster
         run: |
-          echo "Creating EKS cluster: ${{ github.event.inputs.cluster_name }} in region ${{ github.event.inputs.region }}"
+          # Set cluster name from input or default
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me' }}"
+          REGION="${{ github.event.inputs.region || secrets.AWS_REGION }}"
+          NODE_TYPE="${{ github.event.inputs.node_type || 't3.medium' }}"
+          NODE_MIN="${{ github.event.inputs.node_min || '2' }}"
+          NODE_MAX="${{ github.event.inputs.node_max || '4' }}"
+          NODE_DESIRED="${{ github.event.inputs.node_desired || '2' }}"
+          
+          echo "Creating EKS cluster: $CLUSTER_NAME in region $REGION"
           echo "This will take approximately 15-20 minutes..."
           
           eksctl create cluster \
-            --name "${{ github.event.inputs.cluster_name }}" \
-            --region "${{ github.event.inputs.region }}" \
-            --node-type "${{ github.event.inputs.node_type }}" \
-            --nodes-min "${{ github.event.inputs.node_min }}" \
-            --nodes-max "${{ github.event.inputs.node_max }}" \
-            --nodes "${{ github.event.inputs.node_desired }}" \
+            --name "$CLUSTER_NAME" \
+            --region "$REGION" \
+            --node-type "$NODE_TYPE" \
+            --nodes-min "$NODE_MIN" \
+            --nodes-max "$NODE_MAX" \
+            --nodes "$NODE_DESIRED" \
             --with-oidc \
             --managed \
             --alb-ingress-access
 
       - name: Install AWS Load Balancer Controller
         run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me' }}"
           echo "Installing AWS Load Balancer Controller..."
           
           # Create IAM policy for the AWS Load Balancer Controller
@@ -101,7 +124,7 @@ jobs:
           
           # Create service account for the AWS Load Balancer Controller
           eksctl create iamserviceaccount \
-            --cluster=${{ github.event.inputs.cluster_name }} \
+            --cluster=$CLUSTER_NAME \
             --namespace=kube-system \
             --name=aws-load-balancer-controller \
             --attach-policy-arn=$POLICY_ARN \
@@ -115,7 +138,7 @@ jobs:
           # Install the AWS Load Balancer Controller
           helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
-            --set clusterName=${{ github.event.inputs.cluster_name }} \
+            --set clusterName=$CLUSTER_NAME \
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller
 
@@ -133,12 +156,15 @@ jobs:
       
       - name: Setup complete
         run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me' }}"
+          REGION="${{ github.event.inputs.region || secrets.AWS_REGION }}"
+          
           echo "EKS setup complete! The Talk2Me application can now be deployed using the GitHub Actions workflows."
           echo ""
           echo "Make sure the following secrets are configured in your GitHub repository:"
           echo "- AWS_ROLE_ARN: IAM role ARN with permissions to push to ECR and deploy to EKS"
-          echo "- AWS_REGION: ${{ github.event.inputs.region }}"
+          echo "- AWS_REGION: $REGION"
           echo "- ECR_FRONTEND_REPO: talk2me-frontend"
           echo "- ECR_BACKEND_REPO: talk2me-backend"
-          echo "- EKS_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}"
+          echo "- EKS_CLUSTER_NAME: $CLUSTER_NAME"
           echo "- DEEPSEEK_API_KEY: Your DeepSeek API key"
