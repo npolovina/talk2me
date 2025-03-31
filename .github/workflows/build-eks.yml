@@ -1,18 +1,11 @@
 name: EKS Cluster Setup
 
 on:
-  push:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
-  pull_request:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
+  workflow_run:
+    workflows: ["Build Talk2Me"]
+    types:
+      - completed
+    branches: [main]
   workflow_dispatch:
     inputs:
       cluster_name:
@@ -41,13 +34,11 @@ on:
         default: '2'
 
 jobs:
-  setup-eks:
-    # Only run if the build workflow was successful or if manually triggered
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+  setup-iam-role:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      role_arn: ${{ steps.create_role.outputs.role_arn }}
     
     steps:
       - name: Checkout repository
@@ -56,8 +47,125 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ github.event.inputs.region || secrets.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ github.event.inputs.region || secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Set up GitHub OIDC Provider and IAM Role
+        id: create_role
+        run: |
+          # Set variables
+          GITHUB_OIDC_PROVIDER_URL="https://token.actions.githubusercontent.com"
+          ROLE_NAME="github-actions-eks-role"
+          REPO_NAME="${GITHUB_REPOSITORY}"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+          
+          echo "Repository: $REPO_NAME"
+          echo "AWS Account ID: $ACCOUNT_ID"
+          
+          # Check if OIDC provider exists
+          if ! aws iam list-open-id-connect-providers | grep -q $(aws iam list-open-id-connect-providers | grep -o "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_PROVIDER_URL//\//\\/}"); then
+            echo "Creating GitHub OIDC provider..."
+            aws iam create-open-id-connect-provider \
+              --url $GITHUB_OIDC_PROVIDER_URL \
+              --client-id-list "sts.amazonaws.com" \
+              --thumbprint-list "$(echo | openssl s_client -servername token.actions.githubusercontent.com -showcerts -connect token.actions.githubusercontent.com:443 2>/dev/null | openssl x509 -fingerprint -noout | cut -d '=' -f 2 | tr -d ':')"
+          else
+            echo "GitHub OIDC provider already exists."
+          fi
+          
+          # Create trust policy
+          cat > trust-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_PROVIDER_URL}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${GITHUB_OIDC_PROVIDER_URL}:aud": "sts.amazonaws.com"
+                  },
+                  "StringLike": {
+                    "${GITHUB_OIDC_PROVIDER_URL}:sub": "repo:${REPO_NAME}:*"
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Check if role exists
+          if ! aws iam get-role --role-name $ROLE_NAME >/dev/null 2>&1; then
+            echo "Creating GitHub Actions EKS Role..."
+            aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json
+            
+            # Attach necessary policies for EKS and ECR
+            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonECR-FullAccess
+            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/IAMFullAccess
+            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonVPCFullAccess
+          else
+            echo "GitHub Actions EKS Role already exists."
+            
+            # Update trust policy to ensure it's current
+            aws iam update-assume-role-policy --role-name $ROLE_NAME --policy-document file://trust-policy.json
+          fi
+          
+          # Get the role ARN
+          ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query "Role.Arn" --output text)
+          echo "Created/Updated role ARN: $ROLE_ARN"
+          echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+          
+          # Create a custom policy for EKS management if needed
+          cat > eks-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "eks:*",
+                  "ec2:*",
+                  "elasticloadbalancing:*",
+                  "autoscaling:*",
+                  "cloudwatch:*",
+                  "logs:*"
+                ],
+                "Resource": "*"
+              }
+            ]
+          }
+          EOF
+          
+          # Create and attach the policy
+          POLICY_NAME="EKS-Management-Policy"
+          if ! aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}" >/dev/null 2>&1; then
+            aws iam create-policy --policy-name $POLICY_NAME --policy-document file://eks-policy.json
+          fi
+          
+          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+          
+          echo "Role and policies successfully configured."
+
+  setup-eks:
+    needs: setup-iam-role
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.setup-iam-role.outputs.role_arn }}
+          aws-region: ${{ github.event.inputs.region || secrets.AWS_REGION || 'us-east-1' }}
+          audience: sts.amazonaws.com
 
       - name: Install eksctl
         run: |
@@ -79,7 +187,7 @@ jobs:
         run: |
           # Set cluster name from input or default
           CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me' }}"
-          REGION="${{ github.event.inputs.region || secrets.AWS_REGION }}"
+          REGION="${{ github.event.inputs.region || secrets.AWS_REGION || 'us-east-1' }}"
           NODE_TYPE="${{ github.event.inputs.node_type || 't3.medium' }}"
           NODE_MIN="${{ github.event.inputs.node_min || '2' }}"
           NODE_MAX="${{ github.event.inputs.node_max || '4' }}"
@@ -154,15 +262,25 @@ jobs:
           echo "Creating Talk2Me namespace in Kubernetes..."
           kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
       
+      - name: Save role ARN to GitHub repository secrets
+        uses: gliech/create-github-secret-action@v1
+        with:
+          name: AWS_ROLE_ARN
+          value: ${{ needs.setup-iam-role.outputs.role_arn }}
+          pa_token: ${{ secrets.REPO_ACCESS_TOKEN }}
+        if: ${{ secrets.REPO_ACCESS_TOKEN != '' }}
+      
       - name: Setup complete
         run: |
           CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me' }}"
-          REGION="${{ github.event.inputs.region || secrets.AWS_REGION }}"
+          REGION="${{ github.event.inputs.region || secrets.AWS_REGION || 'us-east-1' }}"
           
           echo "EKS setup complete! The Talk2Me application can now be deployed using the GitHub Actions workflows."
           echo ""
+          echo "IAM role has been created and configured: ${{ needs.setup-iam-role.outputs.role_arn }}"
+          echo ""
           echo "Make sure the following secrets are configured in your GitHub repository:"
-          echo "- AWS_ROLE_ARN: IAM role ARN with permissions to push to ECR and deploy to EKS"
+          echo "- AWS_ROLE_ARN: ${{ needs.setup-iam-role.outputs.role_arn }}"
           echo "- AWS_REGION: $REGION"
           echo "- ECR_FRONTEND_REPO: talk2me-frontend"
           echo "- ECR_BACKEND_REPO: talk2me-backend"
