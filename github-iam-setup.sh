@@ -1,5 +1,5 @@
 #!/bin/bash
-# github-iam-setup.sh - Script to create an IAM role for GitHub Actions
+# github-iam-setup.sh - Script to create or update an IAM role for GitHub Actions
 
 set -e
 
@@ -14,6 +14,7 @@ GITHUB_ORG=$1
 GITHUB_REPO=$2
 ROLE_NAME="github-actions-$GITHUB_REPO-role"
 POLICY_NAME="github-actions-$GITHUB_REPO-policy"
+EKS_POLICY_NAME="eks-access-$GITHUB_REPO-policy"
 
 # Check for AWS CLI
 if ! command -v aws &> /dev/null; then
@@ -32,7 +33,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
 echo "AWS Account ID: $ACCOUNT_ID"
 
 # Create the IAM policy document
-echo "Creating IAM policy for GitHub Actions..."
+echo "Creating IAM policy documents..."
 cat > github-actions-policy.json << EOF
 {
     "Version": "2012-10-17",
@@ -77,9 +78,61 @@ cat > github-actions-policy.json << EOF
 }
 EOF
 
-# Create the IAM policy
-POLICY_ARN=$(aws iam create-policy --policy-name $POLICY_NAME --policy-document file://github-actions-policy.json --query "Policy.Arn" --output text)
-echo "IAM Policy created: $POLICY_ARN"
+cat > eks-access-policy.json << EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "eks:*"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+EOF
+
+# Function to create or update a policy
+create_or_update_policy() {
+  local policy_name=$1
+  local policy_document=$2
+  
+  # Check if policy exists
+  if aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" &> /dev/null; then
+    echo "Policy ${policy_name} already exists, updating..."
+    
+    # Get the current version
+    POLICY_VERSION=$(aws iam list-policy-versions --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --query "Versions[?IsDefaultVersion==\`true\`].VersionId" --output text)
+    
+    # Create new version (and set as default)
+    aws iam create-policy-version \
+      --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" \
+      --policy-document file://${policy_document} \
+      --set-as-default
+      
+    # Delete oldest policy version if we have 5 versions (the maximum)
+    VERSIONS_COUNT=$(aws iam list-policy-versions --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --query "length(Versions)" --output text)
+    if [ $VERSIONS_COUNT -ge 5 ]; then
+      OLDEST_VERSION=$(aws iam list-policy-versions --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --query "Versions[-1].VersionId" --output text)
+      aws iam delete-policy-version --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --version-id $OLDEST_VERSION
+    fi
+    
+    POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}"
+  else
+    echo "Creating new policy ${policy_name}..."
+    POLICY_ARN=$(aws iam create-policy --policy-name $policy_name --policy-document file://${policy_document} --query "Policy.Arn" --output text)
+  fi
+  
+  echo $POLICY_ARN
+}
+
+# Create or update the policies
+GITHUB_POLICY_ARN=$(create_or_update_policy $POLICY_NAME "github-actions-policy.json")
+echo "GitHub Actions policy updated: $GITHUB_POLICY_ARN"
+
+EKS_POLICY_ARN=$(create_or_update_policy $EKS_POLICY_NAME "eks-access-policy.json")
+echo "EKS access policy updated: $EKS_POLICY_ARN"
 
 # Create the trust policy for GitHub OIDC
 cat > trust-policy.json << EOF
@@ -118,35 +171,22 @@ else
     echo "GitHub Actions OIDC provider already exists."
 fi
 
-# Create the IAM role
-echo "Creating IAM role for GitHub Actions..."
-aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json
-aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $POLICY_ARN
+# Create or update the IAM role
+if aws iam get-role --role-name $ROLE_NAME &> /dev/null; then
+    echo "Role $ROLE_NAME already exists, updating trust policy..."
+    aws iam update-assume-role-policy --role-name $ROLE_NAME --policy-document file://trust-policy.json
+else
+    echo "Creating IAM role for GitHub Actions..."
+    aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json
+fi
 
-# Now create an EKS specific policy for kubectl access
-echo "Creating EKS access policy..."
-cat > eks-access-policy.json << EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "eks:*"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
-EOF
-
-EKS_POLICY_NAME="eks-access-$GITHUB_REPO-policy"
-EKS_POLICY_ARN=$(aws iam create-policy --policy-name $EKS_POLICY_NAME --policy-document file://eks-access-policy.json --query "Policy.Arn" --output text)
+# Attach policies to role (will update if already attached)
+echo "Attaching policies to role..."
+aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $GITHUB_POLICY_ARN
 aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $EKS_POLICY_ARN
-echo "EKS access policy created and attached: $EKS_POLICY_ARN"
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
-echo "IAM role created: $ROLE_ARN"
+echo "IAM role updated: $ROLE_ARN"
 
 # Add the role to the EKS cluster auth configmap
 read -p "Do you want to add this role to the EKS cluster's aws-auth ConfigMap? (y/n): " ADD_TO_EKS
@@ -161,7 +201,7 @@ if [[ "$ADD_TO_EKS" == "y" || "$ADD_TO_EKS" == "Y" ]]; then
     
     # Check if eksctl is installed
     if command -v eksctl &> /dev/null; then
-        # Use eksctl to add IAM role to EKS cluster
+        # Use eksctl to add IAM role to EKS cluster (this is idempotent)
         eksctl create iamidentitymapping \
             --cluster $EKS_CLUSTER_NAME \
             --arn $ROLE_ARN \
