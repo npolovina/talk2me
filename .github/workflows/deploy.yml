@@ -101,30 +101,6 @@ jobs:
           # Test connection with a basic command (client only)
           kubectl version --client
 
-      # Try multiple approaches to create namespace
-      - name: Create namespace using multiple methods
-        run: |
-          echo "Attempting namespace creation using multiple methods..."
-          
-          # Method 1: Direct file approach
-          echo "Method 1: Using direct file approach"
-          cat << EOF > namespace.yaml
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: talk2me
-          EOF
-          kubectl apply --validate=false -f namespace.yaml
-          rm namespace.yaml
-          
-          # Method 2: Try using eksctl if available
-          echo "Method 2: Using eksctl (if previous method failed)"
-          eksctl create namespace --cluster ${{ secrets.EKS_CLUSTER_NAME }} --name talk2me || echo "eksctl method failed or namespace already exists"
-          
-          # Verify namespace exists with ignore-not-found flag
-          echo "Verifying namespace existence..."
-          kubectl get namespace talk2me --ignore-not-found || echo "Namespace verification failed, but continuing..."
-
       # Update Kubernetes secrets with validation disabled
       - name: Update Kubernetes secrets
         run: |
