@@ -1,18 +1,11 @@
-# .github/workflows/build-eks.yml
-name: 1. EKS Cluster Setup
+name: EKS Cluster Setup
+
 on:
-  push:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
-  pull_request:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
+  workflow_run:
+    workflows: ["Build Talk2Me"]
+    types:
+      - completed
+    branches: [main]
   workflow_dispatch:
     inputs:
       cluster_name:
@@ -43,7 +36,8 @@ on:
 jobs:
   setup-iam-role:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Always run this job since we're triggering on push, pull_request, or workflow_dispatch
+    if: ${{ always() }}
     outputs:
       role_arn: ${{ steps.create_role.outputs.role_arn }}
     
