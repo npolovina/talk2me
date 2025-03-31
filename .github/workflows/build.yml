@@ -1,0 +1,72 @@
+# .github/workflows/build.yml
+name: Build and Push Images
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: vars
+        run: echo "image_tag=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      # Build and push backend image
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_BACKEND_REPO }}:${{ steps.vars.outputs.image_tag }},${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_BACKEND_REPO }}:latest
+
+      # Build and push frontend image
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_FRONTEND_REPO }}:${{ steps.vars.outputs.image_tag }},${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_FRONTEND_REPO }}:latest
+
+      # Store the image tag for deployment workflow
+      - name: Store image tag for deployment
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ steps.vars.outputs.image_tag }}" > image_tag.txt
+
+      - name: Upload image tag artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v3
+        with:
+          name: image-tag
+          path: image_tag.txt
+          retention-days: 1
+
