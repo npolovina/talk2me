@@ -4,11 +4,11 @@
 set -e
 
 # Configuration - Update these variables
-DOMAIN="talk2me.com"
+DOMAIN="talk2me-gen-z.com"
 API_SUBDOMAIN="api.${DOMAIN}"
 EKS_CLUSTER_NAME="talk2me-cluster"
 AWS_REGION="us-east-1"
-HOSTED_ZONE_ID="Z01708443OKPKB2I0BHFX"  # Your hosted zone ID
+HOSTED_ZONE_ID="Z0340616WINWH51QLPE"  # Your hosted zone ID
 
 # Text colors
 GREEN='\033[0;32m'
@@ -118,9 +118,11 @@ request_certificate() {
   
   # Request new certificate
   CERTIFICATE_ARN=$(aws acm request-certificate \
-    --domain-names ${DOMAIN},*.${DOMAIN} \
+    --domain-name "${DOMAIN}" \
+    --subject-alternative-names "*.${DOMAIN}" \
     --validation-method DNS \
     --region ${AWS_REGION} \
+    --query 'CertificateArn' \
     --output text)
   
   echo -e "${GREEN}Certificate requested successfully with ARN: ${CERTIFICATE_ARN}${NC}"
@@ -130,7 +132,7 @@ request_certificate() {
   sleep 10
 }
 
-# Add DNS validation records
+# Add DNS validation records with improved error handling
 add_validation_records() {
   echo -e "${YELLOW}Adding DNS validation records...${NC}"
   
@@ -142,57 +144,94 @@ add_validation_records() {
   # Extract validation records
   echo -e "${YELLOW}Extracting validation records...${NC}"
   
-  # Create a temporary validation records file
-  TEMP_FILE=$(mktemp)
-  
-  echo "{" > ${TEMP_FILE}
-  echo "  \"Changes\": [" >> ${TEMP_FILE}
-  
-  # Process all domain validation records
+  # Process each validation record individually
   RECORD_COUNT=$(echo ${CERT_DETAILS} | jq '.Certificate.DomainValidationOptions | length')
   
   for (( i=0; i<${RECORD_COUNT}; i++ )); do
     VALIDATION_NAME=$(echo ${CERT_DETAILS} | jq -r ".Certificate.DomainValidationOptions[${i}].ResourceRecord.Name")
     VALIDATION_VALUE=$(echo ${CERT_DETAILS} | jq -r ".Certificate.DomainValidationOptions[${i}].ResourceRecord.Value")
     
-    echo "    {" >> ${TEMP_FILE}
-    echo "      \"Action\": \"UPSERT\"," >> ${TEMP_FILE}
-    echo "      \"ResourceRecordSet\": {" >> ${TEMP_FILE}
-    echo "        \"Name\": \"${VALIDATION_NAME}\"," >> ${TEMP_FILE}
-    echo "        \"Type\": \"CNAME\"," >> ${TEMP_FILE}
-    echo "        \"TTL\": 300," >> ${TEMP_FILE}
-    echo "        \"ResourceRecords\": [" >> ${TEMP_FILE}
-    echo "          {" >> ${TEMP_FILE}
-    echo "            \"Value\": \"${VALIDATION_VALUE}\"" >> ${TEMP_FILE}
-    echo "          }" >> ${TEMP_FILE}
-    echo "        ]" >> ${TEMP_FILE}
-    echo "      }" >> ${TEMP_FILE}
+    echo -e "${YELLOW}Processing validation record: ${VALIDATION_NAME}${NC}"
     
-    # Add comma if not the last record
-    if [[ $i -lt $((RECORD_COUNT-1)) ]]; then
-      echo "    }," >> ${TEMP_FILE}
+    # Check if record already exists
+    EXISTING_RECORD=$(aws route53 list-resource-record-sets \
+      --hosted-zone-id ${HOSTED_ZONE_ID} \
+      --query "ResourceRecordSets[?Name=='${VALIDATION_NAME}']" \
+      --output json)
+    
+    if [[ $(echo ${EXISTING_RECORD} | jq length) -gt 0 ]]; then
+      echo -e "${YELLOW}Record already exists. Checking if update is needed...${NC}"
+      
+      EXISTING_VALUE=$(echo ${EXISTING_RECORD} | jq -r ".[0].ResourceRecords[0].Value" 2>/dev/null)
+      
+      if [[ "${EXISTING_VALUE}" == "${VALIDATION_VALUE}" ]]; then
+        echo -e "${GREEN}Existing record matches required value. Skipping.${NC}"
+        continue
+      fi
+      
+      echo -e "${YELLOW}Existing record value differs. Updating...${NC}"
     else
-      echo "    }" >> ${TEMP_FILE}
+      echo -e "${YELLOW}Creating new validation record...${NC}"
     fi
+    
+    # Create a temporary file for this individual record
+    TEMP_FILE=$(mktemp)
+    
+    cat > ${TEMP_FILE} << EOF
+{
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "${VALIDATION_NAME}",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "${VALIDATION_VALUE}"
+          }
+        ]
+      }
+    }
+  ]
+}
+EOF
+    
+    # Apply each validation record individually with error handling
+    if aws route53 change-resource-record-sets \
+      --hosted-zone-id ${HOSTED_ZONE_ID} \
+      --change-batch file://${TEMP_FILE} 2>/dev/null; then
+      echo -e "${GREEN}Validation record added/updated successfully.${NC}"
+    else
+      echo -e "${RED}Failed to add/update validation record.${NC}"
+      echo -e "${YELLOW}You may need to add this record manually:${NC}"
+      echo -e "${YELLOW}Name: ${VALIDATION_NAME}${NC}"
+      echo -e "${YELLOW}Type: CNAME${NC}"
+      echo -e "${YELLOW}Value: ${VALIDATION_VALUE}${NC}"
+      
+      # Ask if user wants to continue or add manually
+      read -p "Do you want to continue with the script? (y/n) " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        rm ${TEMP_FILE}
+        echo -e "${RED}Exiting. Please add the validation records manually and run the script again.${NC}"
+        exit 1
+      fi
+    fi
+    
+    rm ${TEMP_FILE}
   done
   
-  echo "  ]" >> ${TEMP_FILE}
-  echo "}" >> ${TEMP_FILE}
-  
-  # Apply the validation records
-  echo -e "${YELLOW}Applying validation records to Route53...${NC}"
-  aws route53 change-resource-record-sets \
-    --hosted-zone-id ${HOSTED_ZONE_ID} \
-    --change-batch file://${TEMP_FILE}
-  
-  rm ${TEMP_FILE}
-  
-  echo -e "${GREEN}Validation records added successfully.${NC}"
+  echo -e "${GREEN}Validation records processing completed.${NC}"
 }
 
 # Wait for certificate validation
 wait_for_certificate() {
   echo -e "${YELLOW}Waiting for certificate validation (this may take several minutes)...${NC}"
+  
+  # Counter for timeout
+  WAIT_COUNT=0
+  MAX_WAIT=60  # Maximum 30 minute wait (60 * 30 seconds)
   
   while true; do
     STATUS=$(aws acm describe-certificate \
@@ -208,7 +247,21 @@ wait_for_certificate() {
       echo -e "${RED}Certificate validation failed. Please check AWS ACM console for details.${NC}"
       exit 1
     else
-      echo -e "${YELLOW}Current status: ${STATUS}. Waiting 30 seconds...${NC}"
+      WAIT_COUNT=$((WAIT_COUNT + 1))
+      
+      if [[ ${WAIT_COUNT} -ge ${MAX_WAIT} ]]; then
+        echo -e "${YELLOW}Waited for 30 minutes, validation still not complete.${NC}"
+        read -p "Do you want to keep waiting? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+          echo -e "${RED}Exiting. You can run the script again later starting from the 'wait_for_certificate' step.${NC}"
+          exit 1
+        fi
+        # Reset counter to wait more
+        WAIT_COUNT=0
+      fi
+      
+      echo -e "${YELLOW}Current status: ${STATUS}. Waiting 30 seconds... (${WAIT_COUNT}/${MAX_WAIT})${NC}"
       sleep 30
     fi
   done
@@ -419,6 +472,12 @@ EOF
 update_ingress() {
   echo -e "${YELLOW}Updating ingress YAML with certificate ARN...${NC}"
   
+  # Check if namespace exists
+  if ! kubectl get namespace talk2me &> /dev/null; then
+    echo -e "${YELLOW}Creating talk2me namespace...${NC}"
+    kubectl create namespace talk2me
+  fi
+  
   # Create updated ingress file
   cat > ingress-updated.yaml << EOF
 # Updated ingress.yaml with SSL certificate
@@ -465,6 +524,9 @@ EOF
   # Apply the ingress
   echo -e "${YELLOW}Applying ingress to the cluster...${NC}"
   kubectl apply -f ingress-updated.yaml
+  
+  # Make k8s directory if it doesn't exist
+  mkdir -p k8s
   
   # Optionally save the file for future reference
   cp ingress-updated.yaml k8s/ingress.yaml
