@@ -36,7 +36,7 @@ jobs:
 
       # Install kubectl
       - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+        uses: azure/setup-kubectl@v3
         with:
           version: 'latest'
 
@@ -56,7 +56,7 @@ jobs:
       # Download image tag artifact if not manually specified
       - name: Download image tag artifact
         if: ${{ github.event.inputs.image_tag == '' }}
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: image-tag
           path: .
