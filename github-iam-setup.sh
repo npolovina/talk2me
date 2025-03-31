@@ -15,7 +15,7 @@ GITHUB_REPO=$2
 ROLE_NAME="github-actions-$GITHUB_REPO-role"
 POLICY_NAME="github-actions-$GITHUB_REPO-policy"
 EKS_POLICY_NAME="eks-access-$GITHUB_REPO-policy"
-ECR_POLICY_NAME="ecr-access-$GITHUB_REPO-policy"
+ECR_POLICY_NAME="ecr-direct-access-$GITHUB_REPO-policy"
 
 # Check for AWS CLI
 if ! command -v aws &> /dev/null; then
@@ -33,21 +33,22 @@ fi
 ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
 echo "AWS Account ID: $ACCOUNT_ID"
 
-# Create a separate ECR policy document with full ECR access
-cat > ecr-access-policy.json << EOF
+# Create a standalone ECR policy with specific focus on GetAuthorizationToken
+echo "Creating dedicated ECR access policy..."
+cat > ecr-direct-access-policy.json << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
         {
             "Effect": "Allow",
+            "Action": "ecr:GetAuthorizationToken",
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
             "Action": [
-                "ecr:GetAuthorizationToken",
                 "ecr:BatchCheckLayerAvailability",
                 "ecr:GetDownloadUrlForLayer",
-                "ecr:GetRepositoryPolicy",
-                "ecr:DescribeRepositories",
-                "ecr:ListImages",
-                "ecr:DescribeImages",
                 "ecr:BatchGetImage",
                 "ecr:InitiateLayerUpload",
                 "ecr:UploadLayerPart",
@@ -60,54 +61,7 @@ cat > ecr-access-policy.json << EOF
 }
 EOF
 
-# Create the IAM policy document for GitHub Actions
-cat > github-actions-policy.json << EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "eks:DescribeCluster",
-                "eks:ListClusters"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "eks:AccessKubernetesApi"
-            ],
-            "Resource": "arn:aws:eks:*:${ACCOUNT_ID}:cluster/*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "sts:AssumeRole"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
-EOF
-
-# Create EKS access policy
-cat > eks-access-policy.json << EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "eks:*"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
-EOF
-
-# Function to create or update a policy
+# Create or update a policy
 create_or_update_policy() {
   local policy_name=$1
   local policy_document=$2
@@ -119,18 +73,18 @@ create_or_update_policy() {
     # Get the current version
     POLICY_VERSION=$(aws iam list-policy-versions --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --query "Versions[?IsDefaultVersion==\`true\`].VersionId" --output text)
     
-    # Create new version (and set as default)
-    aws iam create-policy-version \
-      --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" \
-      --policy-document file://${policy_document} \
-      --set-as-default
-      
     # Delete oldest policy version if we have 5 versions (the maximum)
     VERSIONS_COUNT=$(aws iam list-policy-versions --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --query "length(Versions)" --output text)
     if [ $VERSIONS_COUNT -ge 5 ]; then
       OLDEST_VERSION=$(aws iam list-policy-versions --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --query "Versions[-1].VersionId" --output text)
       aws iam delete-policy-version --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" --version-id $OLDEST_VERSION
     fi
+    
+    # Create new version (and set as default)
+    aws iam create-policy-version \
+      --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}" \
+      --policy-document file://${policy_document} \
+      --set-as-default
     
     POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${policy_name}"
   else
@@ -141,17 +95,20 @@ create_or_update_policy() {
   echo $POLICY_ARN
 }
 
-# Create or update the policies
-GITHUB_POLICY_ARN=$(create_or_update_policy $POLICY_NAME "github-actions-policy.json")
-echo "GitHub Actions policy updated: $GITHUB_POLICY_ARN"
+# Create or update the ECR policy
+ECR_POLICY_ARN=$(create_or_update_policy $ECR_POLICY_NAME "ecr-direct-access-policy.json")
+echo "ECR access policy created/updated: $ECR_POLICY_ARN"
 
-EKS_POLICY_ARN=$(create_or_update_policy $EKS_POLICY_NAME "eks-access-policy.json")
-echo "EKS access policy updated: $EKS_POLICY_ARN"
+# Check if role exists
+ROLE_EXISTS=false
+if aws iam get-role --role-name $ROLE_NAME &> /dev/null; then
+    ROLE_EXISTS=true
+    echo "Role $ROLE_NAME already exists"
+else
+    echo "Role $ROLE_NAME does not exist, will create it"
+fi
 
-ECR_POLICY_ARN=$(create_or_update_policy $ECR_POLICY_NAME "ecr-access-policy.json")
-echo "ECR access policy updated: $ECR_POLICY_ARN"
-
-# Create the trust policy for GitHub OIDC
+# Create the trust policy for GitHub OIDC provider
 cat > trust-policy.json << EOF
 {
     "Version": "2012-10-17",
@@ -189,23 +146,22 @@ else
 fi
 
 # Create or update the IAM role
-if aws iam get-role --role-name $ROLE_NAME &> /dev/null; then
-    echo "Role $ROLE_NAME already exists, updating trust policy..."
+if [ "$ROLE_EXISTS" = true ]; then
+    echo "Updating existing role trust policy..."
     aws iam update-assume-role-policy --role-name $ROLE_NAME --policy-document file://trust-policy.json
 else
-    echo "Creating IAM role for GitHub Actions..."
+    echo "Creating new IAM role..."
     aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json
 fi
 
-# Attach policies to role (will update if already attached)
-echo "Attaching policies to role..."
-aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $GITHUB_POLICY_ARN
-aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $EKS_POLICY_ARN
+# Attach ECR policy to the role
+echo "Attaching ECR policy to role..."
 aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $ECR_POLICY_ARN
 
-# Also attach the AWS managed ECR power user policy for good measure
+# Attach AWS managed ECR policies
+echo "Attaching AWS managed ECR policies..."
 aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn "arn:aws:iam::aws:policy/AmazonECR-FullAccess"
-echo "Attached AWS managed ECR policy for additional permissions"
+aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn "arn:aws:iam::aws:policy/AmazonElasticContainerRegistryPublicFullAccess"
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 echo "IAM role updated: $ROLE_ARN"
@@ -215,15 +171,14 @@ read -p "Do you want to add this role to the EKS cluster's aws-auth ConfigMap? (
 if [[ "$ADD_TO_EKS" == "y" || "$ADD_TO_EKS" == "Y" ]]; then
     read -p "Enter your EKS cluster name: " EKS_CLUSTER_NAME
     
-    # Get the current aws-auth ConfigMap
-    echo "Updating EKS aws-auth ConfigMap..."
-    
     # Update kubeconfig first
+    echo "Updating kubeconfig..."
     aws eks update-kubeconfig --name $EKS_CLUSTER_NAME
     
     # Check if eksctl is installed
     if command -v eksctl &> /dev/null; then
         # Use eksctl to add IAM role to EKS cluster (this is idempotent)
+        echo "Adding role to EKS cluster auth using eksctl..."
         eksctl create iamidentitymapping \
             --cluster $EKS_CLUSTER_NAME \
             --arn $ROLE_ARN \
@@ -238,9 +193,13 @@ if [[ "$ADD_TO_EKS" == "y" || "$ADD_TO_EKS" == "Y" ]]; then
 fi
 
 # Clean up
-rm -f github-actions-policy.json trust-policy.json eks-access-policy.json ecr-access-policy.json
+rm -f ecr-direct-access-policy.json trust-policy.json
 
-echo "Setup complete! Add the following secrets to your GitHub repository:"
+echo "Setup complete! The following policies have been attached to your role:"
+echo "- Custom ECR access policy: $ECR_POLICY_ARN"
+echo "- AWS managed ECR policies: AmazonECR-FullAccess, AmazonElasticContainerRegistryPublicFullAccess"
+echo ""
+echo "Add the following secrets to your GitHub repository:"
 echo "AWS_ROLE_ARN: $ROLE_ARN"
 echo "AWS_REGION: <your-aws-region>"
 echo "EKS_CLUSTER_NAME: <your-eks-cluster-name>"
