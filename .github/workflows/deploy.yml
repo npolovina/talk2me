@@ -55,7 +55,7 @@ jobs:
 
       # Download image tag artifact if not manually specified
       - name: Download image tag artifact
-        if: ${{ github.event.inputs.image_tag != 'pull_request' }}
+        if: ${{ github.event.inputs.image_tag == '' }}
         uses: actions/download-artifact@v4
         with:
           name: image-tag

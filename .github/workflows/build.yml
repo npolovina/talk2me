@@ -70,7 +70,6 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: image_tag
+          name: image-tag
           path: image_tag.txt
           retention-days: 1
-
