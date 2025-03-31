@@ -1,0 +1,17 @@
+{
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_REPLACE_WITH_VALIDATION_NAME_",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "_REPLACE_WITH_VALIDATION_VALUE_"
+          }
+        ]
+      }
+    }
+  ]
+}
