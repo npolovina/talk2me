@@ -70,15 +70,21 @@ jobs:
           echo "Repository: $REPO_NAME"
           echo "AWS Account ID: $ACCOUNT_ID"
           
-          # Check if OIDC provider exists
-          if ! aws iam list-open-id-connect-providers | grep -q $(aws iam list-open-id-connect-providers | grep -o "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_PROVIDER_URL//\//\\/}"); then
+          # Check if OIDC provider exists - using a more reliable approach
+          PROVIDER_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_PROVIDER_URL}"
+          if aws iam list-open-id-connect-providers | grep -q "$PROVIDER_ARN"; then
+            echo "GitHub OIDC provider already exists."
+          else
             echo "Creating GitHub OIDC provider..."
+            # Get latest thumbprint for GitHub's OIDC provider
+            THUMBPRINT=$(openssl s_client -servername token.actions.githubusercontent.com \
+                                          -showcerts -connect token.actions.githubusercontent.com:443 < /dev/null 2>/dev/null \
+                                          | openssl x509 -fingerprint -noout | cut -d= -f2 | tr -d ':')
+            
             aws iam create-open-id-connect-provider \
               --url $GITHUB_OIDC_PROVIDER_URL \
               --client-id-list "sts.amazonaws.com" \
-              --thumbprint-list "$(echo | openssl s_client -servername token.actions.githubusercontent.com -showcerts -connect token.actions.githubusercontent.com:443 2>/dev/null | openssl x509 -fingerprint -noout | cut -d '=' -f 2 | tr -d ':')"
-          else
-            echo "GitHub OIDC provider already exists."
+              --thumbprint-list "$THUMBPRINT"
           fi
           
           # Create trust policy
@@ -106,29 +112,33 @@ jobs:
           EOF
           
           # Check if role exists
-          if ! aws iam get-role --role-name $ROLE_NAME >/dev/null 2>&1; then
+          echo "Checking if role ${ROLE_NAME} already exists..."
+          if aws iam get-role --role-name $ROLE_NAME 2>/dev/null; then
+            echo "GitHub Actions EKS Role already exists. Updating trust policy..."
+            aws iam update-assume-role-policy --role-name $ROLE_NAME --policy-document file://trust-policy.json
+          else
             echo "Creating GitHub Actions EKS Role..."
             aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json
-            
-            # Attach necessary policies for EKS and ECR
-            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
-            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonECR-FullAccess
-            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonEKSServicePolicy
-            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/IAMFullAccess
-            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/AmazonVPCFullAccess
-          else
-            echo "GitHub Actions EKS Role already exists."
-            
-            # Update trust policy to ensure it's current
-            aws iam update-assume-role-policy --role-name $ROLE_NAME --policy-document file://trust-policy.json
           fi
           
-          # Get the role ARN
-          ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query "Role.Arn" --output text)
-          echo "Created/Updated role ARN: $ROLE_ARN"
-          echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
+          echo "Attaching policies to role..."
+          
+          # Attach AWS managed policies
+          MANAGED_POLICIES=(
+            "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+            "arn:aws:iam::aws:policy/AmazonECR-FullAccess"
+            "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+            "arn:aws:iam::aws:policy/IAMFullAccess"
+            "arn:aws:iam::aws:policy/AmazonVPCFullAccess"
+          )
+          
+          for policy in "${MANAGED_POLICIES[@]}"; do
+            echo "Attaching policy: $policy"
+            aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn "$policy" || echo "Policy may already be attached"
+          done
           
           # Create a custom policy for EKS management if needed
+          echo "Creating custom EKS management policy..."
           cat > eks-policy.json << EOF
           {
             "Version": "2012-10-17",
@@ -149,13 +159,24 @@ jobs:
           }
           EOF
           
-          # Create and attach the policy
+          # Create and attach the custom policy
           POLICY_NAME="EKS-Management-Policy"
-          if ! aws iam get-policy --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}" >/dev/null 2>&1; then
+          POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+          
+          if aws iam get-policy --policy-arn "$POLICY_ARN" 2>/dev/null; then
+            echo "Custom policy ${POLICY_NAME} already exists."
+          else
+            echo "Creating custom policy ${POLICY_NAME}..."
             aws iam create-policy --policy-name $POLICY_NAME --policy-document file://eks-policy.json
           fi
           
-          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+          echo "Attaching custom policy to role..."
+          aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn "$POLICY_ARN" || echo "Policy may already be attached"
+          
+          # Get the role ARN
+          ROLE_ARN=$(aws iam get-role --role-name $ROLE_NAME --query "Role.Arn" --output text)
+          echo "Role ARN: $ROLE_ARN"
+          echo "role_arn=$ROLE_ARN" >> $GITHUB_OUTPUT
           
           echo "Role and policies successfully configured."
 
@@ -173,6 +194,12 @@ jobs:
           role-to-assume: ${{ needs.setup-iam-role.outputs.role_arn }}
           aws-region: ${{ github.event.inputs.region || secrets.AWS_REGION || 'us-east-1' }}
           audience: sts.amazonaws.com
+
+      - name: Verify AWS credentials
+        run: |
+          echo "Verifying AWS credentials..."
+          aws sts get-caller-identity
+          echo "AWS credentials verified."
 
       - name: Install eksctl
         run: |
@@ -203,16 +230,21 @@ jobs:
           echo "Creating EKS cluster: $CLUSTER_NAME in region $REGION"
           echo "This will take approximately 15-20 minutes..."
           
-          eksctl create cluster \
-            --name "$CLUSTER_NAME" \
-            --region "$REGION" \
-            --node-type "$NODE_TYPE" \
-            --nodes-min "$NODE_MIN" \
-            --nodes-max "$NODE_MAX" \
-            --nodes "$NODE_DESIRED" \
-            --with-oidc \
-            --managed \
-            --alb-ingress-access
+          # Check if cluster already exists
+          if eksctl get cluster --name $CLUSTER_NAME --region $REGION 2>/dev/null; then
+            echo "EKS cluster $CLUSTER_NAME already exists. Skipping creation."
+          else
+            eksctl create cluster \
+              --name "$CLUSTER_NAME" \
+              --region "$REGION" \
+              --node-type "$NODE_TYPE" \
+              --nodes-min "$NODE_MIN" \
+              --nodes-max "$NODE_MAX" \
+              --nodes "$NODE_DESIRED" \
+              --with-oidc \
+              --managed \
+              --alb-ingress-access
+          fi
 
       - name: Install AWS Load Balancer Controller
         run: |
@@ -238,6 +270,7 @@ jobs:
           fi
           
           # Create service account for the AWS Load Balancer Controller
+          echo "Creating service account for AWS Load Balancer Controller..."
           eksctl create iamserviceaccount \
             --cluster=$CLUSTER_NAME \
             --namespace=kube-system \
@@ -246,23 +279,47 @@ jobs:
             --override-existing-serviceaccounts \
             --approve
           
-          # Add Helm repo
+          # Add Helm repo and update
+          echo "Adding Helm repo for AWS Load Balancer Controller..."
           helm repo add eks https://aws.github.io/eks-charts
           helm repo update
           
-          # Install the AWS Load Balancer Controller
-          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-            -n kube-system \
-            --set clusterName=$CLUSTER_NAME \
-            --set serviceAccount.create=false \
-            --set serviceAccount.name=aws-load-balancer-controller
+          # Check if controller is already installed
+          if helm list -n kube-system | grep -q "aws-load-balancer-controller"; then
+            echo "AWS Load Balancer Controller is already installed. Upgrading..."
+            helm upgrade aws-load-balancer-controller eks/aws-load-balancer-controller \
+              -n kube-system \
+              --set clusterName=$CLUSTER_NAME \
+              --set serviceAccount.create=false \
+              --set serviceAccount.name=aws-load-balancer-controller
+          else
+            echo "Installing AWS Load Balancer Controller..."
+            helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+              -n kube-system \
+              --set clusterName=$CLUSTER_NAME \
+              --set serviceAccount.create=false \
+              --set serviceAccount.name=aws-load-balancer-controller
+          fi
 
       - name: Create ECR repositories
         run: |
           echo "Creating ECR repositories for Talk2Me..."
           
-          aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true || echo "Frontend repository already exists"
-          aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true || echo "Backend repository already exists"
+          # Create frontend repository if it doesn't exist
+          if ! aws ecr describe-repositories --repository-names talk2me-frontend 2>/dev/null; then
+            echo "Creating frontend repository..."
+            aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true
+          else
+            echo "Frontend repository already exists."
+          fi
+          
+          # Create backend repository if it doesn't exist
+          if ! aws ecr describe-repositories --repository-names talk2me-backend 2>/dev/null; then
+            echo "Creating backend repository..."
+            aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true
+          else
+            echo "Backend repository already exists."
+          fi
       
       - name: Create Kubernetes namespace
         run: |
