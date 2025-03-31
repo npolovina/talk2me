@@ -6,7 +6,7 @@ set -e
 # Check for required parameters
 if [ $# -lt 2 ]; then
   echo "Usage: $0 <github-org> <github-repo>"
-  echo "Example: $0 myorg talk2me"
+  echo "Example: $0 npolovina talk2me"
   exit 1
 fi
 
