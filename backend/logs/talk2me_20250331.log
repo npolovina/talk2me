@@ -1,0 +1,21 @@
+2025-03-31 08:06:38,566 - talk2me - INFO - Request 1743422798.566337 started: POST /api/chat
+2025-03-31 08:06:38,567 - talk2me - INFO - Chat request received, message length: 34
+2025-03-31 08:06:38,773 - talk2me - INFO - Detected language: en
+2025-03-31 08:06:38,773 - talk2me - INFO - Detected categories: []
+2025-03-31 08:06:38,774 - talk2me - ERROR - Request 1743422798.566337 failed with error: 'ChatService' object has no attribute 'generate_system_message'
+2025-03-31 08:08:00,061 - talk2me - INFO - Request 1743422880.0612643 started: POST /api/chat
+2025-03-31 08:08:00,062 - talk2me - INFO - Chat request received, message length: 34
+2025-03-31 08:08:00,330 - talk2me - INFO - Detected language: en
+2025-03-31 08:08:00,330 - talk2me - INFO - Detected categories: []
+2025-03-31 08:08:00,330 - talk2me - INFO - Sending request to DeepSeek API
+2025-03-31 08:08:10,845 - talk2me - ERROR - Error calling DeepSeek API: HTTPSConnectionPool(host='api.deepseek.com', port=443): Read timed out.
+2025-03-31 08:08:10,846 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:08:10,847 - talk2me - INFO - Request 1743422880.0612643 completed with status code 200
+2025-03-31 08:13:33,568 - talk2me - INFO - Request 1743423213.567916 started: POST /api/chat
+2025-03-31 08:13:33,569 - talk2me - INFO - Chat request received, message length: 8
+2025-03-31 08:13:33,572 - talk2me - INFO - Detected language: en
+2025-03-31 08:13:33,572 - talk2me - INFO - Detected categories: []
+2025-03-31 08:13:33,572 - talk2me - INFO - Sending request to DeepSeek API
+2025-03-31 08:13:39,607 - talk2me - INFO - Received response from DeepSeek API
+2025-03-31 08:13:39,608 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:13:39,608 - talk2me - INFO - Request 1743423213.567916 completed with status code 200
