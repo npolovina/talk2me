@@ -15,6 +15,7 @@ GITHUB_REPO=$2
 ROLE_NAME="github-actions-$GITHUB_REPO-role"
 POLICY_NAME="github-actions-$GITHUB_REPO-policy"
 EKS_POLICY_NAME="eks-access-$GITHUB_REPO-policy"
+ECR_POLICY_NAME="ecr-access-$GITHUB_REPO-policy"
 
 # Check for AWS CLI
 if ! command -v aws &> /dev/null; then
@@ -32,26 +33,38 @@ fi
 ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
 echo "AWS Account ID: $ACCOUNT_ID"
 
-# Create the IAM policy document
-echo "Creating IAM policy documents..."
-cat > github-actions-policy.json << EOF
+# Create a separate ECR policy document with full ECR access
+cat > ecr-access-policy.json << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
         {
             "Effect": "Allow",
             "Action": [
-                "ecr:GetDownloadUrlForLayer",
-                "ecr:BatchGetImage",
+                "ecr:GetAuthorizationToken",
                 "ecr:BatchCheckLayerAvailability",
-                "ecr:PutImage",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:GetRepositoryPolicy",
+                "ecr:DescribeRepositories",
+                "ecr:ListImages",
+                "ecr:DescribeImages",
+                "ecr:BatchGetImage",
                 "ecr:InitiateLayerUpload",
                 "ecr:UploadLayerPart",
                 "ecr:CompleteLayerUpload",
-                "ecr:GetAuthorizationToken"
+                "ecr:PutImage"
             ],
             "Resource": "*"
-        },
+        }
+    ]
+}
+EOF
+
+# Create the IAM policy document for GitHub Actions
+cat > github-actions-policy.json << EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
         {
             "Effect": "Allow",
             "Action": [
@@ -78,6 +91,7 @@ cat > github-actions-policy.json << EOF
 }
 EOF
 
+# Create EKS access policy
 cat > eks-access-policy.json << EOF
 {
     "Version": "2012-10-17",
@@ -134,6 +148,9 @@ echo "GitHub Actions policy updated: $GITHUB_POLICY_ARN"
 EKS_POLICY_ARN=$(create_or_update_policy $EKS_POLICY_NAME "eks-access-policy.json")
 echo "EKS access policy updated: $EKS_POLICY_ARN"
 
+ECR_POLICY_ARN=$(create_or_update_policy $ECR_POLICY_NAME "ecr-access-policy.json")
+echo "ECR access policy updated: $ECR_POLICY_ARN"
+
 # Create the trust policy for GitHub OIDC
 cat > trust-policy.json << EOF
 {
@@ -184,6 +201,11 @@ fi
 echo "Attaching policies to role..."
 aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $GITHUB_POLICY_ARN
 aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $EKS_POLICY_ARN
+aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $ECR_POLICY_ARN
+
+# Also attach the AWS managed ECR power user policy for good measure
+aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn "arn:aws:iam::aws:policy/AmazonECR-FullAccess"
+echo "Attached AWS managed ECR policy for additional permissions"
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 echo "IAM role updated: $ROLE_ARN"
@@ -216,7 +238,7 @@ if [[ "$ADD_TO_EKS" == "y" || "$ADD_TO_EKS" == "Y" ]]; then
 fi
 
 # Clean up
-rm -f github-actions-policy.json trust-policy.json eks-access-policy.json
+rm -f github-actions-policy.json trust-policy.json eks-access-policy.json ecr-access-policy.json
 
 echo "Setup complete! Add the following secrets to your GitHub repository:"
 echo "AWS_ROLE_ARN: $ROLE_ARN"
