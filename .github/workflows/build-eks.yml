@@ -1,4 +1,6 @@
-name: EKS Cluster Setup
+# .github/workflows/build-eks.yml
+
+name: 1. EKS Cluster Setup
 
 on:
   workflow_run:
