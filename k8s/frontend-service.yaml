@@ -1,0 +1,13 @@
+# k8s/frontend-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: talk2me-frontend
+  namespace: talk2me
+spec:
+  selector:
+    app: talk2me-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP

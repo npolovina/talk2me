@@ -1,0 +1,31 @@
+# k8s/frontend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: talk2me-frontend
+  namespace: talk2me
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: talk2me-frontend
+  template:
+    metadata:
+      labels:
+        app: talk2me-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/talk2me-frontend:${IMAGE_TAG}
+        ports:
+        - containerPort: 80
+        env:
+        - name: REACT_APP_API_URL
+          value: "https://api.talk2me.com"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "300m"

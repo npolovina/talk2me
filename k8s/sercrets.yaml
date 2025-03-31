@@ -1,0 +1,10 @@
+# k8s/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: talk2me-secrets
+  namespace: talk2me
+type: Opaque
+data:
+  # This is a placeholder. The actual value should be set during deployment
+  deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
