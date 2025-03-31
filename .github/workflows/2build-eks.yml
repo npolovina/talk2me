@@ -52,3 +52,72 @@
 #         description: 'Desired Number of Nodes'
 #         required: true
 #         default: '2'
+
+
+# on:
+#   workflow_run:
+#     workflows: ["Build Talk2Me"]
+#     types:
+#       - completed
+#     branches: [main]
+#   workflow_dispatch:
+#     inputs:
+#       cluster_name:
+#         description: 'EKS Cluster Name'
+#         required: true
+#         default: 'talk2me'
+#       region:
+#         description: 'AWS Region'
+#         required: true
+#         default: 'us-east-1'
+#       node_type:
+#         description: 'EC2 Instance Type for Nodes'
+#         required: true
+#         default: 't3.medium'
+#       node_min:
+#         description: 'Minimum Number of Nodes'
+#         required: true
+#         default: '2'
+#       node_max:
+#         description: 'Maximum Number of Nodes'
+#         required: true
+#         default: '4'
+#       node_desired:
+#         description: 'Desired Number of Nodes'
+#         required: true
+#         default: '2'
+
+# name: EKS Cluster Setup
+
+# on:
+#   workflow_run:
+#     workflows: ["Build Talk2Me"]
+#     types:
+#       - completed
+#     branches: [main]
+#   workflow_dispatch:
+#     inputs:
+#       cluster_name:
+#         description: 'EKS Cluster Name'
+#         required: true
+#         default: 'talk2me'
+#       region:
+#         description: 'AWS Region'
+#         required: true
+#         default: 'us-east-1'
+#       node_type:
+#         description: 'EC2 Instance Type for Nodes'
+#         required: true
+#         default: 't3.medium'
+#       node_min:
+#         description: 'Minimum Number of Nodes'
+#         required: true
+#         default: '2'
+#       node_max:
+#         description: 'Maximum Number of Nodes'
+#         required: true
+#         default: '4'
+#       node_desired:
+#         description: 'Desired Number of Nodes'
+#         required: true
+#         default: '2'

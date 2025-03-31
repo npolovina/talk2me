@@ -1,37 +1,37 @@
 name: EKS Cluster Setup
 
 on:
-  workflow_run:
-    workflows: ["Build Talk2Me"]
-    types:
-      - completed
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      cluster_name:
-        description: 'EKS Cluster Name'
-        required: true
-        default: 'talk2me'
-      region:
-        description: 'AWS Region'
-        required: true
-        default: 'us-east-1'
-      node_type:
-        description: 'EC2 Instance Type for Nodes'
-        required: true
-        default: 't3.medium'
-      node_min:
-        description: 'Minimum Number of Nodes'
-        required: true
-        default: '2'
-      node_max:
-        description: 'Maximum Number of Nodes'
-        required: true
-        default: '4'
-      node_desired:
-        description: 'Desired Number of Nodes'
-        required: true
-        default: '2'
+    workflow_run:
+      workflows: ["Build Talk2Me"]
+      types:
+        - completed
+      branches: [main]
+    workflow_dispatch:
+      inputs:
+        cluster_name:
+          description: 'EKS Cluster Name'
+          required: true
+          default: 'talk2me'
+        region:
+          description: 'AWS Region'
+          required: true
+          default: 'us-east-1'
+        node_type:
+          description: 'EC2 Instance Type for Nodes'
+          required: true
+          default: 't3.medium'
+        node_min:
+          description: 'Minimum Number of Nodes'
+          required: true
+          default: '2'
+        node_max:
+          description: 'Maximum Number of Nodes'
+          required: true
+          default: '4'
+        node_desired:
+          description: 'Desired Number of Nodes'
+          required: true
+          default: '2'
 
 jobs:
   setup-iam-role:
@@ -64,21 +64,32 @@ jobs:
           echo "Repository: $REPO_NAME"
           echo "AWS Account ID: $ACCOUNT_ID"
           
-          # Check if OIDC provider exists - using a more reliable approach
+          # Handle OIDC provider - instead of trying to create one that may exist,
+          # we'll use the existing one or create only if needed
           PROVIDER_ARN="arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${GITHUB_OIDC_PROVIDER_URL}"
-          if aws iam list-open-id-connect-providers | grep -q "$PROVIDER_ARN"; then
-            echo "GitHub OIDC provider already exists."
+          
+          # List providers and check if our provider exists
+          PROVIDER_EXISTS=$(aws iam list-open-id-connect-providers --query "OpenIDConnectProviderList[?contains(Arn, '${GITHUB_OIDC_PROVIDER_URL}')].Arn" --output text)
+          
+          if [ -n "$PROVIDER_EXISTS" ]; then
+            echo "GitHub OIDC provider already exists at: $PROVIDER_EXISTS"
+            PROVIDER_ARN=$PROVIDER_EXISTS
           else
             echo "Creating GitHub OIDC provider..."
-            # Get latest thumbprint for GitHub's OIDC provider
-            THUMBPRINT=$(openssl s_client -servername token.actions.githubusercontent.com \
-                                          -showcerts -connect token.actions.githubusercontent.com:443 < /dev/null 2>/dev/null \
-                                          | openssl x509 -fingerprint -noout | cut -d= -f2 | tr -d ':')
+            # Get thumbprint using a more reliable method
+            THUMBPRINT=$(curl -s https://github.com/actions/runner/blob/main/docs/adrs/1777-runtime-plugin-architecture.md | grep -o "[A-F0-9]\{40\}" | head -n 1)
+            if [ -z "$THUMBPRINT" ]; then
+              echo "Falling back to fixed thumbprint for GitHub OIDC"
+              THUMBPRINT="6938fd4d98bab03faadb97b34396831e3780aea1"
+            fi
             
-            aws iam create-open-id-connect-provider \
+            PROVIDER_ARN=$(aws iam create-open-id-connect-provider \
               --url $GITHUB_OIDC_PROVIDER_URL \
               --client-id-list "sts.amazonaws.com" \
-              --thumbprint-list "$THUMBPRINT"
+              --thumbprint-list "$THUMBPRINT" \
+              --query "OpenIDConnectProviderArn" --output text)
+              
+            echo "Created new OIDC provider: $PROVIDER_ARN"
           fi
           
           # Create trust policy
