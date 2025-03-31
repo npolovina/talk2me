@@ -4,7 +4,7 @@
 set -e
 
 # Configuration variables
-CLUSTER_NAME="talk2me-cluster"
+CLUSTER_NAME="talk2me"
 REGION="us-east-1"
 NODE_TYPE="t3.medium"
 NODE_MIN=2

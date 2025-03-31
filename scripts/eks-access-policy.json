@@ -1,0 +1,22 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "eks:DescribeCluster",
+                "eks:ListClusters"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "eks:AccessKubernetesApi",
+                "eks:UpdateClusterConfig",
+                "eks:DescribeUpdate"
+            ],
+            "Resource": "arn:aws:eks:*:637423575947:cluster/*"
+        }
+    ]
+}

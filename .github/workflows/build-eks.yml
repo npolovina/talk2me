@@ -1,0 +1,144 @@
+name: EKS Cluster Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me'
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      node_type:
+        description: 'EC2 Instance Type for Nodes'
+        required: true
+        default: 't3.medium'
+      node_min:
+        description: 'Minimum Number of Nodes'
+        required: true
+        default: '2'
+      node_max:
+        description: 'Maximum Number of Nodes'
+        required: true
+        default: '4'
+      node_desired:
+        description: 'Desired Number of Nodes'
+        required: true
+        default: '2'
+
+jobs:
+  setup-eks:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ github.event.inputs.region }}
+
+      - name: Install eksctl
+        run: |
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Create EKS cluster
+        run: |
+          echo "Creating EKS cluster: ${{ github.event.inputs.cluster_name }} in region ${{ github.event.inputs.region }}"
+          echo "This will take approximately 15-20 minutes..."
+          
+          eksctl create cluster \
+            --name "${{ github.event.inputs.cluster_name }}" \
+            --region "${{ github.event.inputs.region }}" \
+            --node-type "${{ github.event.inputs.node_type }}" \
+            --nodes-min "${{ github.event.inputs.node_min }}" \
+            --nodes-max "${{ github.event.inputs.node_max }}" \
+            --nodes "${{ github.event.inputs.node_desired }}" \
+            --with-oidc \
+            --managed \
+            --alb-ingress-access
+
+      - name: Install AWS Load Balancer Controller
+        run: |
+          echo "Installing AWS Load Balancer Controller..."
+          
+          # Create IAM policy for the AWS Load Balancer Controller
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          POLICY_ARN=$(aws iam list-policies --query "Policies[?PolicyName=='$POLICY_NAME'].Arn" --output text)
+          
+          if [ -z "$POLICY_ARN" ]; then
+            echo "Creating IAM policy for AWS Load Balancer Controller..."
+            curl -o iam-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            
+            POLICY_ARN=$(aws iam create-policy \
+              --policy-name $POLICY_NAME \
+              --policy-document file://iam-policy.json \
+              --query 'Policy.Arn' --output text)
+              
+            rm iam-policy.json
+          else
+            echo "IAM policy $POLICY_NAME already exists."
+          fi
+          
+          # Create service account for the AWS Load Balancer Controller
+          eksctl create iamserviceaccount \
+            --cluster=${{ github.event.inputs.cluster_name }} \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=$POLICY_ARN \
+            --override-existing-serviceaccounts \
+            --approve
+          
+          # Add Helm repo
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          
+          # Install the AWS Load Balancer Controller
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ github.event.inputs.cluster_name }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller
+
+      - name: Create ECR repositories
+        run: |
+          echo "Creating ECR repositories for Talk2Me..."
+          
+          aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true || echo "Frontend repository already exists"
+          aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true || echo "Backend repository already exists"
+      
+      - name: Create Kubernetes namespace
+        run: |
+          echo "Creating Talk2Me namespace in Kubernetes..."
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+      
+      - name: Setup complete
+        run: |
+          echo "EKS setup complete! The Talk2Me application can now be deployed using the GitHub Actions workflows."
+          echo ""
+          echo "Make sure the following secrets are configured in your GitHub repository:"
+          echo "- AWS_ROLE_ARN: IAM role ARN with permissions to push to ECR and deploy to EKS"
+          echo "- AWS_REGION: ${{ github.event.inputs.region }}"
+          echo "- ECR_FRONTEND_REPO: talk2me-frontend"
+          echo "- ECR_BACKEND_REPO: talk2me-backend"
+          echo "- EKS_CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}"
+          echo "- DEEPSEEK_API_KEY: Your DeepSeek API key"

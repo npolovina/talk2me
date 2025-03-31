@@ -1,17 +1,20 @@
 {
     "Version": "2012-10-17",
     "Statement": [
-      {
-        "Effect": "Allow",
-        "Principal": {
-          "Federated": "arn:aws:iam::637423575947:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/B8AF0D50D4D2DE6AF198FFA79FCA45FA"
-        },
-        "Action": "sts:AssumeRoleWithWebIdentity",
-        "Condition": {
-          "StringEquals": {
-            "oidc.eks.us-east-1.amazonaws.com/id/B8AF0D50D4D2DE6AF198FFA79FCA45FA:sub": "system:serviceaccount:kube-system:external-dns"
-          }
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::637423575947:oidc-provider/token.actions.githubusercontent.com"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                },
+                "StringLike": {
+                    "token.actions.githubusercontent.com:sub": "repo:npolovina/talk2me:*"
+                }
+            }
         }
-      }
     ]
-  }
+}
