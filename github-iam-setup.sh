@@ -65,6 +65,13 @@ cat > github-actions-policy.json << EOF
                 "eks:AccessKubernetesApi"
             ],
             "Resource": "arn:aws:eks:*:${ACCOUNT_ID}:cluster/*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "sts:AssumeRole"
+            ],
+            "Resource": "*"
         }
     ]
 }
@@ -116,11 +123,62 @@ echo "Creating IAM role for GitHub Actions..."
 aws iam create-role --role-name $ROLE_NAME --assume-role-policy-document file://trust-policy.json
 aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $POLICY_ARN
 
+# Now create an EKS specific policy for kubectl access
+echo "Creating EKS access policy..."
+cat > eks-access-policy.json << EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "eks:*"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+EOF
+
+EKS_POLICY_NAME="eks-access-$GITHUB_REPO-policy"
+EKS_POLICY_ARN=$(aws iam create-policy --policy-name $EKS_POLICY_NAME --policy-document file://eks-access-policy.json --query "Policy.Arn" --output text)
+aws iam attach-role-policy --role-name $ROLE_NAME --policy-arn $EKS_POLICY_ARN
+echo "EKS access policy created and attached: $EKS_POLICY_ARN"
+
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 echo "IAM role created: $ROLE_ARN"
 
-# Clean up
-rm -f github-actions-policy.json trust-policy.json
+# Add the role to the EKS cluster auth configmap
+read -p "Do you want to add this role to the EKS cluster's aws-auth ConfigMap? (y/n): " ADD_TO_EKS
+if [[ "$ADD_TO_EKS" == "y" || "$ADD_TO_EKS" == "Y" ]]; then
+    read -p "Enter your EKS cluster name: " EKS_CLUSTER_NAME
+    
+    # Get the current aws-auth ConfigMap
+    echo "Updating EKS aws-auth ConfigMap..."
+    
+    # Update kubeconfig first
+    aws eks update-kubeconfig --name $EKS_CLUSTER_NAME
+    
+    # Check if eksctl is installed
+    if command -v eksctl &> /dev/null; then
+        # Use eksctl to add IAM role to EKS cluster
+        eksctl create iamidentitymapping \
+            --cluster $EKS_CLUSTER_NAME \
+            --arn $ROLE_ARN \
+            --username github-actions \
+            --group system:masters
+        
+        echo "Role added to EKS cluster auth."
+    else
+        echo "eksctl not found. Please install eksctl and run:"
+        echo "eksctl create iamidentitymapping --cluster $EKS_CLUSTER_NAME --arn $ROLE_ARN --username github-actions --group system:masters"
+    fi
+fi
 
-echo "Setup complete! Add the following secret to your GitHub repository:"
+# Clean up
+rm -f github-actions-policy.json trust-policy.json eks-access-policy.json
+
+echo "Setup complete! Add the following secrets to your GitHub repository:"
 echo "AWS_ROLE_ARN: $ROLE_ARN"
+echo "AWS_REGION: <your-aws-region>"
+echo "EKS_CLUSTER_NAME: <your-eks-cluster-name>"
