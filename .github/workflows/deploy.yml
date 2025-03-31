@@ -78,15 +78,37 @@ jobs:
             echo "Warning: No image tag found, using 'latest' instead" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # Update kubeconfig to connect to EKS cluster
+      # Update kubeconfig to connect to EKS cluster with proper authentication
       - name: Update kubeconfig for EKS cluster
         run: |
-          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+          if [ -z "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
+            echo "Error: EKS_CLUSTER_NAME secret is not set"
+            exit 1
+          fi
+  
+          # Get identity info for debugging
+          echo "Current AWS identity:"
+          aws sts get-caller-identity
+        
+          # Update kubeconfig with explicit role ARN
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --role-arn ${{ secrets.AWS_ROLE_ARN }}
+        
+          # Verify kubeconfig was created properly
+          kubectl config view --minify
+        
+          # Test connection with a basic command
+          kubectl version --short
 
       # Create namespace if it doesn't exist
       - name: Create namespace if needed
         run: |
-          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+          # Try with validation disabled first to avoid initial auth errors
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply --validate=false -f -
+
+          # Then verify the namespace exists
+          kubectl get namespace talk2me
 
       # Update Kubernetes secrets
       - name: Update Kubernetes secrets
