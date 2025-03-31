@@ -1,13 +1,25 @@
 # .github/workflows/build-eks.yml
 
 name: 1. EKS Cluster Setup
-
 on:
-  workflow_run:
-    workflows: ["Build Talk2Me"]
-    types:
-      - completed
-    branches: [main]
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
+# on:
+#   workflow_run:
+#     workflows: ["Build Talk2Me"]
+#     types:
+#       - completed
+#     branches: [main]
   workflow_dispatch:
     inputs:
       cluster_name:
