@@ -64,7 +64,7 @@ jobs:
 
       - name: Upload image tag artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: image-tag
           path: image_tag.txt
