@@ -27,6 +27,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Download artifacts from the triggering workflow (only for workflow_run trigger)
+      - name: Download artifacts from workflow
+        if: ${{ github.event_name == 'workflow_run' && github.event.inputs.image_tag == '' }}
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: build.yml
+          name: image-tag
+          path: .
+          workflow_conclusion: success
+          
       # Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -53,23 +63,19 @@ jobs:
         run: |
           echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
 
-      # Download image tag artifact if not manually specified
-      - name: Download image tag artifact
-        if: ${{ github.event.inputs.image_tag == '' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: image-tag
-          path: .
-
       # Set image tag based on input or artifact
       - name: Set image tag
         id: vars
         run: |
           if [ -n "${{ github.event.inputs.image_tag }}" ]; then
             echo "image_tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
-          else
+          elif [ -f "image_tag.txt" ]; then
             IMAGE_TAG=$(cat image_tag.txt)
             echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          else
+            # Fallback to 'latest' if no tag is available
+            echo "image_tag=latest" >> $GITHUB_OUTPUT
+            echo "Warning: No image tag found, using 'latest' instead" >> $GITHUB_STEP_SUMMARY
           fi
 
       # Update kubeconfig to connect to EKS cluster
