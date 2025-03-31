@@ -98,32 +98,37 @@ jobs:
           # Verify kubeconfig was created properly
           kubectl config view --minify
         
-          # Test connection with a basic command
+          # Test connection with a basic command (client only)
           kubectl version --client
 
-      # Create namespace using direct file method
-      - name: Create namespace if needed
+      # Try multiple approaches to create namespace
+      - name: Create namespace using multiple methods
         run: |
-          # Create namespace YAML file
+          echo "Attempting namespace creation using multiple methods..."
+          
+          # Method 1: Direct file approach
+          echo "Method 1: Using direct file approach"
           cat << EOF > namespace.yaml
           apiVersion: v1
           kind: Namespace
           metadata:
             name: talk2me
           EOF
-          
-          # Apply with validation explicitly disabled
-          echo "Creating namespace with validation disabled..."
           kubectl apply --validate=false -f namespace.yaml
           rm namespace.yaml
           
-          # Try both methods of namespace verification
-          echo "Verifying namespace exists..."
-          kubectl get namespace talk2me --output=name --ignore-not-found || echo "Namespace verification failed"
+          # Method 2: Try using eksctl if available
+          echo "Method 2: Using eksctl (if previous method failed)"
+          eksctl create namespace --cluster ${{ secrets.EKS_CLUSTER_NAME }} --name talk2me || echo "eksctl method failed or namespace already exists"
+          
+          # Verify namespace exists with ignore-not-found flag
+          echo "Verifying namespace existence..."
+          kubectl get namespace talk2me --ignore-not-found || echo "Namespace verification failed, but continuing..."
 
-      # Update Kubernetes secrets
+      # Update Kubernetes secrets with validation disabled
       - name: Update Kubernetes secrets
         run: |
+          echo "Creating Kubernetes secret..."
           DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
           
           # Create secret configuration
@@ -142,9 +147,10 @@ jobs:
           kubectl apply --validate=false -f ./secret.yaml
           rm ./secret.yaml
 
-      # Process and apply Kubernetes manifests
+      # Process and apply Kubernetes manifests with validation disabled
       - name: Deploy to EKS
         run: |
+          echo "Deploying Kubernetes manifests..."
           # Set variables for templating
           export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
           export AWS_REGION="${{ secrets.AWS_REGION }}"
@@ -159,8 +165,14 @@ jobs:
             rm processed_manifest.yaml
           done
 
-      # Verify deployment 
+      # Verify deployment with timeouts and error handling
       - name: Verify deployment
         run: |
-          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=60s || echo "Backend deployment verification timed out"
-          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=60s || echo "Frontend deployment verification timed out"
+          echo "Verifying backend deployment..."
+          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=60s || echo "Backend deployment verification timed out, but continuing..."
+          
+          echo "Verifying frontend deployment..."
+          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=60s || echo "Frontend deployment verification timed out, but continuing..."
+          
+          echo "Listing all resources in the talk2me namespace:"
+          kubectl get all -n talk2me || echo "Failed to list resources"
