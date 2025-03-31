@@ -19,3 +19,136 @@
 2025-03-31 08:13:39,607 - talk2me - INFO - Received response from DeepSeek API
 2025-03-31 08:13:39,608 - talk2me - INFO - Successfully generated AI response
 2025-03-31 08:13:39,608 - talk2me - INFO - Request 1743423213.567916 completed with status code 200
+2025-03-31 08:35:10,225 - talk2me - INFO - Request 1743424510.2253382 started: OPTIONS /api/chat
+2025-03-31 08:35:10,226 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:35:10,227 - talk2me - INFO - Request 1743424510.2253382 completed with status code 200
+2025-03-31 08:35:10,229 - talk2me - INFO - Request 1743424510.2297912 started: POST /api/chat
+2025-03-31 08:35:10,229 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:35:10,233 - talk2me - INFO - Chat request received, message length: 26
+2025-03-31 08:35:10,503 - talk2me - INFO - Detected language: en
+2025-03-31 08:35:10,503 - talk2me - INFO - Detected categories: []
+2025-03-31 08:35:10,503 - talk2me - INFO - Sending request to DeepSeek API
+2025-03-31 08:35:20,325 - talk2me - INFO - Received response from DeepSeek API
+2025-03-31 08:35:20,326 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:35:20,333 - talk2me - INFO - Request 1743424510.2297912 completed with status code 200
+2025-03-31 08:38:03,077 - talk2me - INFO - Running in LIVE MODE - API calls will be made to DeepSeek
+2025-03-31 08:38:25,256 - talk2me - INFO - Running in LIVE MODE - API calls will be made to DeepSeek
+2025-03-31 08:38:42,329 - talk2me - INFO - Running in LIVE MODE - API calls will be made to DeepSeek
+2025-03-31 08:38:55,231 - talk2me - INFO - Request 1743424735.2312624 started: POST /api/chat
+2025-03-31 08:38:55,231 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:38:55,232 - talk2me - INFO - Chat request received, message length: 45
+2025-03-31 08:38:55,461 - talk2me - INFO - Detected language: en
+2025-03-31 08:38:55,461 - talk2me - INFO - Detected categories: []
+2025-03-31 08:38:55,462 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-03-31 08:38:55,462 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-03-31 08:39:06,946 - talk2me - INFO - DeepSeek API response status: 200
+2025-03-31 08:39:06,947 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Mon, 31 Mar 2025 12:38:55 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '72b045f794f200a7e855492a6712d0bf', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=ldcAyiRf_V9yIdP_XR.ht.zazYdrzToadJUK3lsjjxU-1743424735-1.0.1.1-Qokjm4YcNpMqHUwZGqAQuVQbXqQcJkNQrTlrtFMxIRSzw.ehqt58CRlefxOzkf8U2FqmezKqF5Oizw0Wh9xf.idKG4kyX89BVia4H9dqc98; path=/; expires=Mon, 31-Mar-25 13:08:55 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '928fe814d849438e-EWR', 'Content-Encoding': 'gzip'}
+2025-03-31 08:39:06,947 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-03-31 08:39:06,947 - talk2me - WARNING - Empty or missing response from DeepSeek API
+2025-03-31 08:39:06,948 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:39:06,949 - talk2me - INFO - Request 1743424735.2312624 completed with status code 200
+2025-03-31 08:39:25,489 - talk2me - INFO - Request 1743424765.4898572 started: POST /api/chat
+2025-03-31 08:39:25,490 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:39:25,490 - talk2me - INFO - Chat request received, message length: 15
+2025-03-31 08:39:25,504 - talk2me - INFO - Detected language: it
+2025-03-31 08:39:25,504 - talk2me - INFO - Detected categories: []
+2025-03-31 08:39:25,504 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-03-31 08:39:25,504 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-03-31 08:39:37,221 - talk2me - INFO - DeepSeek API response status: 200
+2025-03-31 08:39:37,221 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Mon, 31 Mar 2025 12:39:26 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '9ca186a8fa3ed1fd9e13240dfcad002b', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=h0cRbawBM9fGinxpPkVFqIjvHcSEcOSO28Jz6H2FpyI-1743424766-1.0.1.1-M8g1.x38pvcb1hhXB83sPzOQlzPbu9jK0unpxGfjQOkIpI188ZYrYFW2jlbbldsVWVlw2XXFe.yRtchDS29Pxf7BvAzji.gN5W56y4BJiBw; path=/; expires=Mon, 31-Mar-25 13:09:26 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '928fe8d208ed0f6c-EWR', 'Content-Encoding': 'gzip'}
+2025-03-31 08:39:37,222 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-03-31 08:39:37,222 - talk2me - WARNING - Empty or missing response from DeepSeek API
+2025-03-31 08:39:37,223 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:39:37,224 - talk2me - INFO - Request 1743424765.4898572 completed with status code 200
+2025-03-31 08:40:54,868 - talk2me - INFO - Request 1743424854.8686728 started: POST /api/chat
+2025-03-31 08:40:54,868 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:40:54,869 - talk2me - INFO - Chat request received, message length: 15
+2025-03-31 08:40:54,880 - talk2me - INFO - Detected language: it
+2025-03-31 08:40:54,881 - talk2me - INFO - Detected categories: []
+2025-03-31 08:40:54,881 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-03-31 08:40:54,881 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-03-31 08:41:04,698 - talk2me - INFO - DeepSeek API response status: 200
+2025-03-31 08:41:04,699 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Mon, 31 Mar 2025 12:40:55 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '81d16ec128a5d8caef49bd46f23411bb', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=XMLvfuVvLSE3CqA0VhzPU5mztj3tUyDJK7AtLkNGiu4-1743424855-1.0.1.1-lDDd60ztdnLtYj3fo6anFQRWto7XBsKIjYW7k4Wg1KMIBStBa.fdcYs6V8TTPh4uuSQxlJYC2OBh0PlnjpJ_svYw3Ighnafwc2GJmTgdofA; path=/; expires=Mon, 31-Mar-25 13:10:55 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '928feb0189b58d3f-EWR', 'Content-Encoding': 'gzip'}
+2025-03-31 08:41:04,699 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-03-31 08:41:04,699 - talk2me - WARNING - Empty or missing response from DeepSeek API
+2025-03-31 08:41:04,700 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:41:04,701 - talk2me - INFO - Request 1743424854.8686728 completed with status code 200
+2025-03-31 08:41:32,802 - talk2me - INFO - Running in LIVE MODE - API calls will be made to DeepSeek
+2025-03-31 08:41:42,268 - talk2me - INFO - Request 1743424902.2687585 started: POST /api/chat
+2025-03-31 08:41:42,269 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:41:42,270 - talk2me - INFO - Chat request received, message length: 20
+2025-03-31 08:41:42,501 - talk2me - INFO - Detected language: it
+2025-03-31 08:41:42,501 - talk2me - INFO - Detected categories: []
+2025-03-31 08:41:42,501 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-03-31 08:41:42,501 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-03-31 08:41:52,382 - talk2me - INFO - DeepSeek API response status: 200
+2025-03-31 08:41:52,383 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Mon, 31 Mar 2025 12:41:42 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': 'c4c90a77356680194578bb6bdc66b55e', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=6w4Nie.2d9xS6DaQoeXrCcyxEydGVRGJPfgKnWtw3Cs-1743424902-1.0.1.1-2lTXpdaNZD.1jdjrRsmQsBsHnT6VmxL1AJ.hQ8bFyF8Il_MCAic4U8emUG9fw.r5ieOZdzACPN0E7F6DXFU1pmVa2wrYHTqznbpuSLTuepw; path=/; expires=Mon, 31-Mar-25 13:11:42 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '928fec28a9104232-EWR', 'Content-Encoding': 'gzip'}
+2025-03-31 08:41:52,383 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-03-31 08:41:52,383 - talk2me - WARNING - Empty or missing response from DeepSeek API
+2025-03-31 08:41:52,384 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:41:52,385 - talk2me - INFO - Request 1743424902.2687585 completed with status code 200
+2025-03-31 08:43:06,790 - talk2me - INFO - Running in LIVE MODE - API calls will be made to DeepSeek
+2025-03-31 08:44:25,317 - talk2me - INFO - Running in LIVE MODE - API calls will be made to DeepSeek
+2025-03-31 08:44:30,588 - talk2me - INFO - Running in LIVE MODE - API calls will be made to DeepSeek
+2025-03-31 08:48:28,005 - talk2me - INFO - Request 1743425308.005724 started: OPTIONS /api/chat
+2025-03-31 08:48:28,006 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:48:28,006 - talk2me - INFO - Request 1743425308.005724 completed with status code 200
+2025-03-31 08:48:28,009 - talk2me - INFO - Request 1743425308.0090692 started: POST /api/chat
+2025-03-31 08:48:28,009 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:48:28,010 - talk2me - INFO - Chat request received, message length: 5
+2025-03-31 08:48:28,321 - talk2me - INFO - Detected language: fi
+2025-03-31 08:48:28,321 - talk2me - INFO - Detected categories: []
+2025-03-31 08:48:28,322 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-03-31 08:48:28,322 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-03-31 08:48:35,751 - talk2me - INFO - DeepSeek API response status: 200
+2025-03-31 08:48:35,752 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Mon, 31 Mar 2025 12:48:28 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': 'd63430aaee41f73e8be281e03a6d9b04', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=lAWaPzdCtFgZyYajs0T.0OZJd0tJgNx34ufdAF.yuWY-1743425308-1.0.1.1-bjpWlefOC3wE_qEgLZfmSmWaSgQaewaZopKOktYeImE9ei7DyhtfqXQ.IL61iExdp_FMH2vOGkIPZghQlm3LaGF_r9zS2BXHKkTlelymJJ8; path=/; expires=Mon, 31-Mar-25 13:18:28 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '928ff6114fdb2fef-EWR', 'Content-Encoding': 'gzip'}
+2025-03-31 08:48:35,752 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-03-31 08:48:35,752 - talk2me - INFO - Full response structure: {
+  "id": "f0cca081-4d9c-436f-8ae2-ad2abe9e0272",
+  "object": "chat.completion",
+  "created": 1743425308,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hey! \ud83d\udc4b What's up? How can I help you today? Whether it's about mental health, fitness, or just general wellness\u2014I'm here for you! \ud83d\ude0a"
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_...
+2025-03-31 08:48:35,753 - talk2me - INFO - Extracted response from standard path: choices[0].message.content
+2025-03-31 08:48:35,753 - talk2me - INFO - Received valid response from DeepSeek API
+2025-03-31 08:48:35,753 - talk2me - INFO - Response length: 131 characters
+2025-03-31 08:48:35,754 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:48:35,756 - talk2me - INFO - Request 1743425308.0090692 completed with status code 200
+2025-03-31 08:48:52,074 - talk2me - INFO - Request 1743425332.074573 started: POST /api/chat
+2025-03-31 08:48:52,074 - talk2me - INFO - Request origin: http://localhost:3000
+2025-03-31 08:48:52,075 - talk2me - INFO - Chat request received, message length: 81
+2025-03-31 08:48:52,078 - talk2me - INFO - Detected language: en
+2025-03-31 08:48:52,078 - talk2me - INFO - Detected categories: []
+2025-03-31 08:48:52,078 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-03-31 08:48:52,078 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-03-31 08:49:04,658 - talk2me - INFO - DeepSeek API response status: 200
+2025-03-31 08:49:04,659 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Mon, 31 Mar 2025 12:48:52 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '65838d00bd5f23831a7abc9c2ed22eb7', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=268g2_sVVIAjgxQp1YBjTQ1b6D8CIiqAartTgqRSn34-1743425332-1.0.1.1-anm683WSHK3KP__noldGPO3ALpwG1LO7iQExseL9orNCJDGp3VI7yWrmI1m_tA3eczs7gdTrqxFSrbb8HuCO9lL6i3.mWg2eSZjiuSFrAWw; path=/; expires=Mon, 31-Mar-25 13:18:52 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '928ff6a58ff57c87-EWR', 'Content-Encoding': 'gzip'}
+2025-03-31 08:49:04,659 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-03-31 08:49:04,659 - talk2me - INFO - Full response structure: {
+  "id": "85da65af-3698-426d-9ee6-c086a9cef526",
+  "object": "chat.completion",
+  "created": 1743425332,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Totally! I gotchu. Here are some legit and easy-to-understand resources for reproductive health:  \n\n- **Planned Parenthood** (plannedparenthood.org) \u2013 Super reliable info on everything from birth control to STIs.  \n- **Scarleteen** (scarleteen.com) \u...
+2025-03-31 08:49:04,659 - talk2me - INFO - Extracted response from standard path: choices[0].message.content
+2025-03-31 08:49:04,659 - talk2me - INFO - Received valid response from DeepSeek API
+2025-03-31 08:49:04,659 - talk2me - INFO - Response length: 629 characters
+2025-03-31 08:49:04,660 - talk2me - INFO - Successfully generated AI response
+2025-03-31 08:49:04,661 - talk2me - INFO - Request 1743425332.074573 completed with status code 200

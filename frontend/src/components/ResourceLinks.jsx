@@ -1,6 +1,7 @@
 // src/components/ResourceLinks.jsx
-const ResourceLinks = () => {
-    const resources = [
+const ResourceLinks = ({ resources = [] }) => {
+    // Default resources to show if none provided
+    const defaultResources = [
       {
         category: "Mental Health",
         links: [
@@ -17,11 +18,14 @@ const ResourceLinks = () => {
       }
     ];
     
+    // Use provided resources or fall back to defaults
+    const displayResources = resources.length > 0 ? resources : defaultResources;
+    
     return (
       <div className="resource-links">
         <h3>Helpful Resources</h3>
         <div className="resources-container">
-          {resources.map((resource, index) => (
+          {displayResources.map((resource, index) => (
             <div key={index} className="resource-category">
               <h4>{resource.category}</h4>
               <ul>
@@ -30,6 +34,7 @@ const ResourceLinks = () => {
                     <a href={link.url} target="_blank" rel="noopener noreferrer">
                       {link.name}
                     </a>
+                    {link.phone && <span> • {link.phone}</span>}
                   </li>
                 ))}
               </ul>

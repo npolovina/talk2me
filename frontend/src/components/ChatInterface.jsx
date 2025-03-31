@@ -12,6 +12,7 @@ const ChatInterface = () => {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [showCrisisAlert, setShowCrisisAlert] = useState(false);
+  const [resources, setResources] = useState([]);
   const messagesEndRef = useRef(null);
   const API_URL = process.env.REACT_APP_API_URL || '';
   
@@ -26,16 +27,6 @@ const ChatInterface = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim()) return;
-    
-    // Crisis keywords detection
-    const crisisKeywords = ["suicide", "kill myself", "end my life", "don't want to live"];
-    const hasCrisisKeywords = crisisKeywords.some(keyword => 
-      input.toLowerCase().includes(keyword)
-    );
-    
-    if (hasCrisisKeywords) {
-      setShowCrisisAlert(true);
-    }
     
     // Add user message
     const userMessage = {
@@ -59,7 +50,45 @@ const ChatInterface = () => {
         body: JSON.stringify({ message: input }),
       });
       
+      if (!response.ok) {
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+      
       const data = await response.json();
+      
+      // Check for crisis detection from backend
+      if (data.crisis_detected) {
+        setShowCrisisAlert(true);
+      }
+      
+      // Update resources if provided
+      if (data.resources && data.resources.length > 0) {
+        // Process resources into categories
+        const resourcesByCategory = {};
+        
+        data.resources.forEach(resource => {
+          // Extract category from resource or use a default
+          const category = resource.category || "General Resources";
+          
+          if (!resourcesByCategory[category]) {
+            resourcesByCategory[category] = [];
+          }
+          
+          resourcesByCategory[category].push({
+            name: resource.name,
+            url: resource.url,
+            phone: resource.phone
+          });
+        });
+        
+        // Convert to format expected by ResourceLinks
+        const formattedResources = Object.keys(resourcesByCategory).map(category => ({
+          category,
+          links: resourcesByCategory[category]
+        }));
+        
+        setResources(formattedResources);
+      }
       
       // Add bot response with typing effect delay
       setTimeout(() => {
@@ -124,7 +153,7 @@ const ChatInterface = () => {
         </button>
       </form>
       
-      <ResourceLinks />
+      <ResourceLinks resources={resources} />
     </div>
   );
 };
