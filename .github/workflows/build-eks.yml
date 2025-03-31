@@ -1,25 +1,26 @@
 # .github/workflows/build-eks.yml
-
 name: 1. EKS Cluster Setup
-on:
-  push:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
-  pull_request:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
 # on:
-#   workflow_run:
-#     workflows: ["Build Talk2Me"]
-#     types:
-#       - completed
-#     branches: [main]
+#   push:
+#     branches: [ main ]
+#     paths-ignore:
+#       - '**.md'
+#       - 'k8s/**'
+#       - '.github/workflows/deploy.yml'
+#   pull_request:
+#     branches: [ main ]
+#     paths-ignore:
+#       - '**.md'
+#       - 'k8s/**'
+#       - '.github/workflows/deploy.yml'
+# name: EKS Cluster Setup
+
+on:
+  workflow_run:
+    workflows: ["Build Talk2Me"]
+    types:
+      - completed
+    branches: [main]
   workflow_dispatch:
     inputs:
       cluster_name:
@@ -276,27 +277,21 @@ jobs:
           echo "Creating Talk2Me namespace in Kubernetes..."
           kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
       
-      - name: Save role ARN to GitHub repository secrets
-        uses: gliech/create-github-secret-action@v1
-        with:
-          name: AWS_ROLE_ARN
-          value: ${{ needs.setup-iam-role.outputs.role_arn }}
-          pa_token: ${{ secrets.REPO_ACCESS_TOKEN }}
-        if: ${{ secrets.REPO_ACCESS_TOKEN != '' }}
-      
-      - name: Setup complete
+      - name: Display role ARN for manual setup
         run: |
           CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me' }}"
           REGION="${{ github.event.inputs.region || secrets.AWS_REGION || 'us-east-1' }}"
           
+          echo "=================================================="
           echo "EKS setup complete! The Talk2Me application can now be deployed using the GitHub Actions workflows."
           echo ""
-          echo "IAM role has been created and configured: ${{ needs.setup-iam-role.outputs.role_arn }}"
+          echo "IMPORTANT: Add this IAM role ARN as a secret in your repository:"
+          echo "AWS_ROLE_ARN: ${{ needs.setup-iam-role.outputs.role_arn }}"
           echo ""
-          echo "Make sure the following secrets are configured in your GitHub repository:"
-          echo "- AWS_ROLE_ARN: ${{ needs.setup-iam-role.outputs.role_arn }}"
+          echo "Other required secrets:"
           echo "- AWS_REGION: $REGION"
           echo "- ECR_FRONTEND_REPO: talk2me-frontend"
           echo "- ECR_BACKEND_REPO: talk2me-backend"
           echo "- EKS_CLUSTER_NAME: $CLUSTER_NAME"
           echo "- DEEPSEEK_API_KEY: Your DeepSeek API key"
+          echo "=================================================="
