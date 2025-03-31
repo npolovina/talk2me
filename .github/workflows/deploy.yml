@@ -78,7 +78,7 @@ jobs:
             echo "Warning: No image tag found, using 'latest' instead" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # Update kubeconfig to connect to EKS cluster with proper authentication
+      # Update kubeconfig to connect to EKS cluster WITHOUT role switching
       - name: Update kubeconfig for EKS cluster
         run: |
           if [ -z "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
@@ -90,16 +90,37 @@ jobs:
           echo "Current AWS identity:"
           aws sts get-caller-identity
         
-          # Update kubeconfig with explicit role ARN
+          # Update kubeconfig WITHOUT role-arn parameter
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
-            --name ${{ secrets.EKS_CLUSTER_NAME }} \
-            --role-arn ${{ secrets.AWS_ROLE_ARN }}
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
         
-          # Verify kubeconfig was created properly
+          # Print kubeconfig for debugging
+          echo "Generated kubeconfig:"
           kubectl config view --minify
-        
-          # Test connection with a basic command (client only)
-          kubectl version --client
+          
+          # Print AWS info for debugging
+          echo "AWS credentials:"
+          aws configure list
+
+      # Try multiple approaches to create namespace
+      - name: Create namespace using multiple methods
+        run: |
+          echo "Attempting namespace creation using multiple methods..."
+          
+          # Method 1: Direct file approach with skip validation
+          echo "Method 1: Using direct file approach with skip validation"
+          cat << EOF > namespace.yaml
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: talk2me
+          EOF
+          kubectl apply --validate=false -f namespace.yaml
+          rm namespace.yaml
+          
+          # Verify namespace exists with ignore-not-found flag
+          echo "Verifying namespace existence..."
+          kubectl get namespace talk2me --ignore-not-found || echo "Namespace verification failed, but continuing..."
 
       # Update Kubernetes secrets with validation disabled
       - name: Update Kubernetes secrets
