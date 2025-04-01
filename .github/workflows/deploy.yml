@@ -43,19 +43,20 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          output-credentials: true
+
+      # Verify AWS authentication
+      - name: Verify AWS authentication
+        run: |
+          echo "Verifying AWS authentication:"
+          aws sts get-caller-identity
+          echo "AWS credentials successfully configured"
 
       # Install kubectl
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: 'latest'
-
-      # Install eksctl
-      - name: Install eksctl
-        run: |
-          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-          sudo mv /tmp/eksctl /usr/local/bin
-          eksctl version
 
       # Get AWS account ID
       - name: Get AWS account ID
@@ -78,31 +79,31 @@ jobs:
             echo "Warning: No image tag found, using 'latest' instead" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # Update kubeconfig to connect to EKS cluster WITHOUT role switching
+      # Update kubeconfig to connect to EKS cluster
       - name: Update kubeconfig for EKS cluster
         run: |
-          if [ -z "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
-            echo "Error: EKS_CLUSTER_NAME secret is not set"
-            exit 1
-          fi
-  
+          echo "Setting up kubeconfig for EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}"
+          
           # Get identity info for debugging
           echo "Current AWS identity:"
           aws sts get-caller-identity
         
-          # Update kubeconfig WITHOUT role-arn parameter
+          # Update kubeconfig
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
             --name ${{ secrets.EKS_CLUSTER_NAME }}
         
-          # Print kubeconfig for debugging
-          echo "Generated kubeconfig:"
-          kubectl config view --minify
-          
-          # Print AWS info for debugging
-          echo "AWS credentials:"
-          aws configure list
+          # Verify cluster access
+          echo "Verifying cluster access:"
+          kubectl cluster-info
+          kubectl get nodes
 
-      # Update Kubernetes secrets with validation disabled
+      # Create namespace if it doesn't exist
+      - name: Create namespace if needed
+        run: |
+          echo "Ensuring talk2me namespace exists..."
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+
+      # Update Kubernetes secrets
       - name: Update Kubernetes secrets
         run: |
           echo "Creating Kubernetes secret..."
@@ -120,11 +121,16 @@ jobs:
             deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
           EOF
           
-          # Apply the secret with validation disabled
-          kubectl apply --validate=false -f ./secret.yaml
+          # Apply the secret
+          kubectl apply -f ./secret.yaml
+          
+          # Verify secret was created
+          kubectl get secrets -n talk2me
+          
+          # Clean up
           rm ./secret.yaml
 
-      # Process and apply Kubernetes manifests with validation disabled
+      # Process and apply Kubernetes manifests
       - name: Deploy to EKS
         run: |
           echo "Deploying Kubernetes manifests..."
@@ -132,13 +138,12 @@ jobs:
           export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
           export AWS_REGION="${{ secrets.AWS_REGION }}"
           export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
-          export DEEPSEEK_API_KEY_BASE64="$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)"
           
-          # Process the manifests with validation disabled
+          # Process the manifests
           for manifest in k8s/*.yaml; do
             echo "Processing $manifest..."
             envsubst < "$manifest" > processed_manifest.yaml
-            kubectl apply --validate=false -f processed_manifest.yaml
+            kubectl apply -f processed_manifest.yaml
             rm processed_manifest.yaml
           done
 
@@ -146,10 +151,10 @@ jobs:
       - name: Verify deployment
         run: |
           echo "Verifying backend deployment..."
-          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=60s || echo "Backend deployment verification timed out, but continuing..."
+          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=120s || echo "Backend deployment verification timed out, but continuing..."
           
           echo "Verifying frontend deployment..."
-          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=60s || echo "Frontend deployment verification timed out, but continuing..."
+          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=120s || echo "Frontend deployment verification timed out, but continuing..."
           
           echo "Listing all resources in the talk2me namespace:"
-          kubectl get all -n talk2me || echo "Failed to list resources"
+          kubectl get all -n talk2me
