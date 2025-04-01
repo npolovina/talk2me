@@ -1,19 +1,19 @@
 # .github/workflows/deploy-k8s.yml
-name: 3. Deploy to EKS
+name: 2. Deploy to EKS
 
-# on:
-#   workflow_run:
-#     workflows: ["3. Build and Push Images"]
-#     types:
-#       - completed
-#     branches: [main]
-#   # Allow manual deployments
-#   workflow_dispatch:
-#     inputs:
-#       image_tag:
-#         description: 'Image tag to deploy (defaults to latest build)'
-#         required: false
-#         default: ''
+on:
+  workflow_run:
+    workflows: ["1. Build and Push Images"]
+    types:
+      - completed
+    branches: [main]
+  # Allow manual deployments
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to latest build)'
+        required: false
+        default: ''
 
 jobs:
   deploy:
