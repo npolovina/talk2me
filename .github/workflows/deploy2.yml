@@ -1,579 +1,579 @@
-# # .github/workflows/deploy.yml
-# name: 3. Deploy to K8s (non-DNS)
+# .github/workflows/deploy.yml
+name: 3. Deploy to K8s (non-DNS)
 
-# on:
-#   workflow_run:
-#     workflows: ["2. Build and Push Images"]
-#     types:
-#       - completed
-#     branches: [main]
-#   # Allow manual deployments
-#   workflow_dispatch:
-#     inputs:
-#       image_tag:
-#         description: 'Image tag to deploy (defaults to latest build)'
-#         required: false
-#         default: ''
-#       namespace:
-#         description: 'Kubernetes namespace to deploy to'
-#         required: false
-#         default: 'talk2me'
-#       run_verification:
-#         description: 'Run verification workflow after deployment'
-#         required: false
-#         default: 'true'
-#         type: boolean
-#       aws_region:
-#         description: 'AWS Region (override)'
-#         required: false
-#         default: ''
-#       eks_cluster_name:
-#         description: 'EKS Cluster Name (override)'
-#         required: false
-#         default: ''
+on:
+  workflow_run:
+    workflows: ["2. Build and Push Images"]
+    types:
+      - completed
+    branches: [main]
+  # Allow manual deployments
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to latest build)'
+        required: false
+        default: ''
+      namespace:
+        description: 'Kubernetes namespace to deploy to'
+        required: false
+        default: 'talk2me'
+      run_verification:
+        description: 'Run verification workflow after deployment'
+        required: false
+        default: 'true'
+        type: boolean
+      aws_region:
+        description: 'AWS Region (override)'
+        required: false
+        default: ''
+      eks_cluster_name:
+        description: 'EKS Cluster Name (override)'
+        required: false
+        default: ''
 
-# jobs:
-#   deploy:
-#     runs-on: ubuntu-latest
-#     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-#     permissions:
-#       id-token: write  # Required for OIDC auth
-#       contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      id-token: write  # Required for OIDC auth
+      contents: read
     
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-#       # Download artifacts from the triggering workflow (only for workflow_run trigger)
-#       - name: Download artifacts from workflow
-#         if: ${{ github.event_name == 'workflow_run' }}
-#         uses: dawidd6/action-download-artifact@v2
-#         with:
-#           workflow: build.yml
-#           name: deployment-info
-#           path: ./deployment-info
-#           workflow_conclusion: success
+      # Download artifacts from the triggering workflow (only for workflow_run trigger)
+      - name: Download artifacts from workflow
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: build.yml
+          name: deployment-info
+          path: ./deployment-info
+          workflow_conclusion: success
           
-#       # Configure AWS credentials
-#       - name: Configure AWS credentials
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-#           aws-region: ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}
-#           mask-aws-account-id: false # Show account ID for better debugging
+      # Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}
+          mask-aws-account-id: false # Show account ID for better debugging
 
-#       # Verify AWS authentication
-#       - name: Verify AWS authentication
-#         run: |
-#           echo "Verifying AWS authentication:"
-#           aws sts get-caller-identity
-#           echo "AWS credentials successfully configured"
+      # Verify AWS authentication
+      - name: Verify AWS authentication
+        run: |
+          echo "Verifying AWS authentication:"
+          aws sts get-caller-identity
+          echo "AWS credentials successfully configured"
           
-#           # Also check ECR access
-#           echo "Verifying ECR access:"
-#           aws ecr get-authorization-token --region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}
-#           echo "ECR access verified"
+          # Also check ECR access
+          echo "Verifying ECR access:"
+          aws ecr get-authorization-token --region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}
+          echo "ECR access verified"
           
-#           # List available EKS clusters for debugging
-#           echo "Available EKS clusters in region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}:"
-#           aws eks list-clusters --region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }} || echo "Failed to list clusters, check permissions"
+          # List available EKS clusters for debugging
+          echo "Available EKS clusters in region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}:"
+          aws eks list-clusters --region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }} || echo "Failed to list clusters, check permissions"
 
-#       # Install kubectl
-#       - name: Install kubectl
-#         uses: azure/setup-kubectl@v3
-#         with:
-#           version: 'latest'
+      # Install kubectl
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
 
-#       # Get AWS account ID
-#       - name: Get AWS account ID
-#         id: aws-account
-#         run: |
-#           echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+      # Get AWS account ID
+      - name: Get AWS account ID
+        id: aws-account
+        run: |
+          echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
 
-#       # Set image tag based on input or artifact
-#       - name: Set image tag
-#         id: vars
-#         run: |
-#           # Set namespace
-#           if [ -n "${{ github.event.inputs.namespace }}" ]; then
-#             NAMESPACE="${{ github.event.inputs.namespace }}"
-#           else
-#             NAMESPACE="talk2me"
-#           fi
-#           echo "namespace=${NAMESPACE}" >> $GITHUB_OUTPUT
+      # Set image tag based on input or artifact
+      - name: Set image tag
+        id: vars
+        run: |
+          # Set namespace
+          if [ -n "${{ github.event.inputs.namespace }}" ]; then
+            NAMESPACE="${{ github.event.inputs.namespace }}"
+          else
+            NAMESPACE="talk2me"
+          fi
+          echo "namespace=${NAMESPACE}" >> $GITHUB_OUTPUT
           
-#           # Set EKS cluster name
-#           if [ -n "${{ github.event.inputs.eks_cluster_name }}" ]; then
-#             EKS_CLUSTER_NAME="${{ github.event.inputs.eks_cluster_name }}"
-#           elif [ -n "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
-#             EKS_CLUSTER_NAME="${{ secrets.EKS_CLUSTER_NAME }}"
-#           else
-#             echo "::error::EKS cluster name is not set. Please set the EKS_CLUSTER_NAME secret or provide it as an input."
-#             exit 1
-#           fi
-#           echo "eks_cluster_name=${EKS_CLUSTER_NAME}" >> $GITHUB_OUTPUT
+          # Set EKS cluster name
+          if [ -n "${{ github.event.inputs.eks_cluster_name }}" ]; then
+            EKS_CLUSTER_NAME="${{ github.event.inputs.eks_cluster_name }}"
+          elif [ -n "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
+            EKS_CLUSTER_NAME="${{ secrets.EKS_CLUSTER_NAME }}"
+          else
+            echo "::error::EKS cluster name is not set. Please set the EKS_CLUSTER_NAME secret or provide it as an input."
+            exit 1
+          fi
+          echo "eks_cluster_name=${EKS_CLUSTER_NAME}" >> $GITHUB_OUTPUT
           
-#           # Set AWS region
-#           if [ -n "${{ github.event.inputs.aws_region }}" ]; then
-#             AWS_REGION="${{ github.event.inputs.aws_region }}"
-#           elif [ -n "${{ secrets.AWS_REGION }}" ]; then
-#             AWS_REGION="${{ secrets.AWS_REGION }}"
-#           else
-#             echo "::error::AWS region is not set. Please set the AWS_REGION secret or provide it as an input."
-#             exit 1
-#           fi
-#           echo "aws_region=${AWS_REGION}" >> $GITHUB_OUTPUT
+          # Set AWS region
+          if [ -n "${{ github.event.inputs.aws_region }}" ]; then
+            AWS_REGION="${{ github.event.inputs.aws_region }}"
+          elif [ -n "${{ secrets.AWS_REGION }}" ]; then
+            AWS_REGION="${{ secrets.AWS_REGION }}"
+          else
+            echo "::error::AWS region is not set. Please set the AWS_REGION secret or provide it as an input."
+            exit 1
+          fi
+          echo "aws_region=${AWS_REGION}" >> $GITHUB_OUTPUT
           
-#           # Set image tag
-#           if [ -n "${{ github.event.inputs.image_tag }}" ]; then
-#             echo "image_tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
-#             echo "Using manually specified image tag: ${{ github.event.inputs.image_tag }}"
-#           elif [ -f "./deployment-info/image_tag.txt" ]; then
-#             IMAGE_TAG=$(cat ./deployment-info/image_tag.txt)
-#             echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-#             echo "Using image tag from build workflow: ${IMAGE_TAG}"
-#             if [ -f "./deployment-info/build_time.txt" ]; then
-#               BUILD_TIME=$(cat ./deployment-info/build_time.txt)
-#               echo "Image was built at: ${BUILD_TIME}"
-#             fi
-#             if [ -f "./deployment-info/registry.txt" ]; then
-#               REGISTRY=$(cat ./deployment-info/registry.txt)
-#               echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
-#             fi
-#           else
-#             # Fallback to 'latest' if no tag is available
-#             echo "image_tag=latest" >> $GITHUB_OUTPUT
-#             echo "Warning: No image tag found, using 'latest' instead"
-#           fi
+          # Set image tag
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "image_tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+            echo "Using manually specified image tag: ${{ github.event.inputs.image_tag }}"
+          elif [ -f "./deployment-info/image_tag.txt" ]; then
+            IMAGE_TAG=$(cat ./deployment-info/image_tag.txt)
+            echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+            echo "Using image tag from build workflow: ${IMAGE_TAG}"
+            if [ -f "./deployment-info/build_time.txt" ]; then
+              BUILD_TIME=$(cat ./deployment-info/build_time.txt)
+              echo "Image was built at: ${BUILD_TIME}"
+            fi
+            if [ -f "./deployment-info/registry.txt" ]; then
+              REGISTRY=$(cat ./deployment-info/registry.txt)
+              echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
+            fi
+          else
+            # Fallback to 'latest' if no tag is available
+            echo "image_tag=latest" >> $GITHUB_OUTPUT
+            echo "Warning: No image tag found, using 'latest' instead"
+          fi
 
-#       # Check if EKS cluster exists
-#       - name: Check if EKS cluster exists
-#         id: cluster-check
-#         run: |
-#           # Try to describe the cluster
-#           if aws eks describe-cluster --name ${{ steps.vars.outputs.eks_cluster_name }} --region ${{ steps.vars.outputs.aws_region }} --query "cluster.name" &>/dev/null; then
-#             echo "exists=true" >> $GITHUB_OUTPUT
-#             echo "EKS cluster ${{ steps.vars.outputs.eks_cluster_name }} exists in region ${{ steps.vars.outputs.aws_region }}"
-#           else
-#             echo "exists=false" >> $GITHUB_OUTPUT
-#             echo "::error::EKS cluster ${{ steps.vars.outputs.eks_cluster_name }} does not exist in region ${{ steps.vars.outputs.aws_region }}"
+      # Check if EKS cluster exists
+      - name: Check if EKS cluster exists
+        id: cluster-check
+        run: |
+          # Try to describe the cluster
+          if aws eks describe-cluster --name ${{ steps.vars.outputs.eks_cluster_name }} --region ${{ steps.vars.outputs.aws_region }} --query "cluster.name" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "EKS cluster ${{ steps.vars.outputs.eks_cluster_name }} exists in region ${{ steps.vars.outputs.aws_region }}"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::error::EKS cluster ${{ steps.vars.outputs.eks_cluster_name }} does not exist in region ${{ steps.vars.outputs.aws_region }}"
             
-#             # List available clusters in the region
-#             echo "Available EKS clusters in region ${{ steps.vars.outputs.aws_region }}:"
-#             aws eks list-clusters --region ${{ steps.vars.outputs.aws_region }} || echo "Failed to list clusters, check permissions"
+            # List available clusters in the region
+            echo "Available EKS clusters in region ${{ steps.vars.outputs.aws_region }}:"
+            aws eks list-clusters --region ${{ steps.vars.outputs.aws_region }} || echo "Failed to list clusters, check permissions"
             
-#             # List available regions for debugging
-#             echo "Available regions with EKS service:"
-#             aws ec2 describe-regions --query "Regions[].RegionName" --output text || echo "Failed to list regions, check permissions"
+            # List available regions for debugging
+            echo "Available regions with EKS service:"
+            aws ec2 describe-regions --query "Regions[].RegionName" --output text || echo "Failed to list regions, check permissions"
             
-#             exit 1
-#           fi
+            exit 1
+          fi
 
-#       # Update kubeconfig to connect to EKS cluster
-#       - name: Update kubeconfig for EKS cluster
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         run: |
-#           # Get current role identity for debugging
-#           echo "Current AWS identity:"
-#           aws sts get-caller-identity
+      # Update kubeconfig to connect to EKS cluster
+      - name: Update kubeconfig for EKS cluster
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          # Get current role identity for debugging
+          echo "Current AWS identity:"
+          aws sts get-caller-identity
           
-#           # Update kubeconfig
-#           echo "Updating kubeconfig for EKS cluster ${{ steps.vars.outputs.eks_cluster_name }}..."
-#           aws eks update-kubeconfig --region ${{ steps.vars.outputs.aws_region }} \
-#             --name ${{ steps.vars.outputs.eks_cluster_name }}
+          # Update kubeconfig
+          echo "Updating kubeconfig for EKS cluster ${{ steps.vars.outputs.eks_cluster_name }}..."
+          aws eks update-kubeconfig --region ${{ steps.vars.outputs.aws_region }} \
+            --name ${{ steps.vars.outputs.eks_cluster_name }}
           
-#           # Test access to the cluster
-#           echo "Testing access to Kubernetes cluster:"
-#           kubectl cluster-info
-#           kubectl get nodes || {
-#             echo "::error::Failed to access Kubernetes cluster. Check AWS role permissions or network access."
-#             exit 1
-#           }
+          # Test access to the cluster
+          echo "Testing access to Kubernetes cluster:"
+          kubectl cluster-info
+          kubectl get nodes || {
+            echo "::error::Failed to access Kubernetes cluster. Check AWS role permissions or network access."
+            exit 1
+          }
 
-#       # Create namespace if it doesn't exist
-#       - name: Ensure namespace exists
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         run: |
-#           echo "Creating namespace ${{ steps.vars.outputs.namespace }} if it doesn't exist..."
-#           kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      # Create namespace if it doesn't exist
+      - name: Ensure namespace exists
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          echo "Creating namespace ${{ steps.vars.outputs.namespace }} if it doesn't exist..."
+          kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
 
-#       # Update Kubernetes secrets
-#       - name: Update Kubernetes secrets
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         run: |
-#           # Check if DEEPSEEK_API_KEY is set
-#           if [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
-#             echo "::warning::DEEPSEEK_API_KEY secret is not set"
-#             DEEPSEEK_API_KEY_BASE64=$(echo -n "dummy-key" | base64 -w 0)
-#           else
-#             echo "Creating Kubernetes secret with DEEPSEEK_API_KEY..."
-#             DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
-#           fi
+      # Update Kubernetes secrets
+      - name: Update Kubernetes secrets
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          # Check if DEEPSEEK_API_KEY is set
+          if [ -z "${{ secrets.DEEPSEEK_API_KEY }}" ]; then
+            echo "::warning::DEEPSEEK_API_KEY secret is not set"
+            DEEPSEEK_API_KEY_BASE64=$(echo -n "dummy-key" | base64 -w 0)
+          else
+            echo "Creating Kubernetes secret with DEEPSEEK_API_KEY..."
+            DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
+          fi
           
-#           # Create secret configuration
-#           cat << EOF > ./secret.yaml
-#           apiVersion: v1
-#           kind: Secret
-#           metadata:
-#             name: talk2me-secrets
-#             namespace: ${{ steps.vars.outputs.namespace }}
-#           type: Opaque
-#           data:
-#             deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
-#           EOF
+          # Create secret configuration
+          cat << EOF > ./secret.yaml
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: talk2me-secrets
+            namespace: ${{ steps.vars.outputs.namespace }}
+          type: Opaque
+          data:
+            deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
+          EOF
           
-#           # Apply the secret
-#           kubectl apply -f ./secret.yaml
-#           rm ./secret.yaml
+          # Apply the secret
+          kubectl apply -f ./secret.yaml
+          rm ./secret.yaml
 
-#       # Process and apply Kubernetes manifests
-#       - name: Deploy to EKS
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         run: |
-#           echo "Deploying Kubernetes manifests..."
-#           # Set variables for templating
-#           export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
-#           export AWS_REGION="${{ steps.vars.outputs.aws_region }}"
-#           export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
-#           export NAMESPACE="${{ steps.vars.outputs.namespace }}"
-#           export REGISTRY="${{ steps.vars.outputs.registry || format('{0}.dkr.ecr.{1}.amazonaws.com', steps.aws-account.outputs.account_id, steps.vars.outputs.aws_region) }}"
+      # Process and apply Kubernetes manifests
+      - name: Deploy to EKS
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          echo "Deploying Kubernetes manifests..."
+          # Set variables for templating
+          export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
+          export AWS_REGION="${{ steps.vars.outputs.aws_region }}"
+          export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
+          export NAMESPACE="${{ steps.vars.outputs.namespace }}"
+          export REGISTRY="${{ steps.vars.outputs.registry || format('{0}.dkr.ecr.{1}.amazonaws.com', steps.aws-account.outputs.account_id, steps.vars.outputs.aws_region) }}"
           
-#           # Create deployments directory if it doesn't exist
-#           mkdir -p deployments
+          # Create deployments directory if it doesn't exist
+          mkdir -p deployments
           
-#           # Generate backend deployment with correct indentation
-#           cat << EOF > deployments/backend-deployment.yaml
-#           apiVersion: apps/v1
-#           kind: Deployment
-#           metadata:
-#             name: talk2me-backend
-#             namespace: ${NAMESPACE}
-#           spec:
-#             replicas: 2
-#             selector:
-#               matchLabels:
-#                 app: talk2me-backend
-#             template:
-#               metadata:
-#                 labels:
-#                   app: talk2me-backend
-#               spec:
-#                 containers:
-#                 - name: backend
-#                   image: ${REGISTRY}/talk2me-backend:${IMAGE_TAG}
-#                   ports:
-#                   - containerPort: 8000
-#                   env:
-#                   - name: DEEPSEEK_API_KEY
-#                     valueFrom:
-#                       secretKeyRef:
-#                         name: talk2me-secrets
-#                         key: deepseek-api-key
-#                   resources:
-#                     limits:
-#                       cpu: "500m"
-#                       memory: "512Mi"
-#                     requests:
-#                       cpu: "250m"
-#                       memory: "256Mi"
-#           ---
-#           apiVersion: v1
-#           kind: Service
-#           metadata:
-#             name: talk2me-backend
-#             namespace: ${NAMESPACE}
-#           spec:
-#             selector:
-#               app: talk2me-backend
-#             ports:
-#             - port: 80
-#               targetPort: 8000
-#             type: ClusterIP
-#           EOF
+          # Generate backend deployment with correct indentation
+          cat << EOF > deployments/backend-deployment.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-backend
+            namespace: ${NAMESPACE}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-backend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-backend
+              spec:
+                containers:
+                - name: backend
+                  image: ${REGISTRY}/talk2me-backend:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: DEEPSEEK_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: talk2me-secrets
+                        key: deepseek-api-key
+                  resources:
+                    limits:
+                      cpu: "500m"
+                      memory: "512Mi"
+                    requests:
+                      cpu: "250m"
+                      memory: "256Mi"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-backend
+            namespace: ${NAMESPACE}
+          spec:
+            selector:
+              app: talk2me-backend
+            ports:
+            - port: 80
+              targetPort: 8000
+            type: ClusterIP
+          EOF
           
-#           # Generate frontend deployment with correct indentation
-#           cat << EOF > deployments/frontend-deployment.yaml
-#           apiVersion: apps/v1
-#           kind: Deployment
-#           metadata:
-#             name: talk2me-frontend
-#             namespace: ${NAMESPACE}
-#           spec:
-#             replicas: 2
-#             selector:
-#               matchLabels:
-#                 app: talk2me-frontend
-#             template:
-#               metadata:
-#                 labels:
-#                   app: talk2me-frontend
-#               spec:
-#                 containers:
-#                 - name: frontend
-#                   image: ${REGISTRY}/talk2me-frontend:${IMAGE_TAG}
-#                   ports:
-#                   - containerPort: 80
-#                   resources:
-#                     limits:
-#                       cpu: "300m"
-#                       memory: "256Mi"
-#                     requests:
-#                       cpu: "100m"
-#                       memory: "128Mi"
-#           ---
-#           apiVersion: v1
-#           kind: Service
-#           metadata:
-#             name: talk2me-frontend
-#             namespace: ${NAMESPACE}
-#           spec:
-#             selector:
-#               app: talk2me-frontend
-#             ports:
-#             - port: 80
-#               targetPort: 80
-#             type: ClusterIP
-#           EOF
+          # Generate frontend deployment with correct indentation
+          cat << EOF > deployments/frontend-deployment.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-frontend
+            namespace: ${NAMESPACE}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-frontend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-frontend
+              spec:
+                containers:
+                - name: frontend
+                  image: ${REGISTRY}/talk2me-frontend:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 80
+                  resources:
+                    limits:
+                      cpu: "300m"
+                      memory: "256Mi"
+                    requests:
+                      cpu: "100m"
+                      memory: "128Mi"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-frontend
+            namespace: ${NAMESPACE}
+          spec:
+            selector:
+              app: talk2me-frontend
+            ports:
+            - port: 80
+              targetPort: 80
+            type: ClusterIP
+          EOF
           
-#           # Try to find certificate for domain in ACM
-#           echo "Looking for SSL certificate for talk2me-gen-z.com in ACM..."
-#           CERT_ARN=""
+          # Try to find certificate for domain in ACM
+          echo "Looking for SSL certificate for talk2me-gen-z.com in ACM..."
+          CERT_ARN=""
           
-#           if [ -n "${{ secrets.CERTIFICATE_ARN }}" ]; then
-#             # Use provided certificate ARN if available
-#             CERT_ARN="${{ secrets.CERTIFICATE_ARN }}"
-#             echo "Using certificate ARN from secrets: ${CERT_ARN}"
-#           else
-#             # Try to find certificate for domain in ACM
-#             echo "Looking for wildcard or matching certificate in ACM..."
-#             # Try wildcard first
-#             CERT_ARN=$(aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[?contains(DomainName, '*.talk2me-gen-z.com')].CertificateArn" --output text)
+          if [ -n "${{ secrets.CERTIFICATE_ARN }}" ]; then
+            # Use provided certificate ARN if available
+            CERT_ARN="${{ secrets.CERTIFICATE_ARN }}"
+            echo "Using certificate ARN from secrets: ${CERT_ARN}"
+          else
+            # Try to find certificate for domain in ACM
+            echo "Looking for wildcard or matching certificate in ACM..."
+            # Try wildcard first
+            CERT_ARN=$(aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[?contains(DomainName, '*.talk2me-gen-z.com')].CertificateArn" --output text)
             
-#             # If no wildcard cert, try exact domain
-#             if [ -z "$CERT_ARN" ]; then
-#               CERT_ARN=$(aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[?DomainName=='talk2me-gen-z.com'].CertificateArn" --output text)
-#             fi
+            # If no wildcard cert, try exact domain
+            if [ -z "$CERT_ARN" ]; then
+              CERT_ARN=$(aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[?DomainName=='talk2me-gen-z.com'].CertificateArn" --output text)
+            fi
             
-#             # If still no cert, try listing all certs for debugging
-#             if [ -z "$CERT_ARN" ]; then
-#               echo "No matching certificate found. Available certificates:"
-#               aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[].{ARN:CertificateArn,Domain:DomainName}" --output table
-#             else
-#               echo "Found certificate: ${CERT_ARN}"
-#             fi
-#           fi
+            # If still no cert, try listing all certs for debugging
+            if [ -z "$CERT_ARN" ]; then
+              echo "No matching certificate found. Available certificates:"
+              aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[].{ARN:CertificateArn,Domain:DomainName}" --output table
+            else
+              echo "Found certificate: ${CERT_ARN}"
+            fi
+          fi
           
-#           # Generate ingress configuration based on certificate availability
-#           if [ -z "$CERT_ARN" ]; then
-#             echo "::warning::No certificate found for talk2me-gen-z.com, using simplified ingress configuration"
-#             # Generate simplified ingress with correct indentation
-#             cat << EOF > deployments/ingress.yaml
-#           apiVersion: networking.k8s.io/v1
-#           kind: Ingress
-#           metadata:
-#             name: talk2me-ingress
-#             namespace: ${NAMESPACE}
-#             annotations:
-#               kubernetes.io/ingress.class: "alb"
-#               alb.ingress.kubernetes.io/scheme: internet-facing
-#               alb.ingress.kubernetes.io/target-type: ip
-#           spec:
-#             rules:
-#             - http:
-#                 paths:
-#                 - path: /api
-#                   pathType: Prefix
-#                   backend:
-#                     service:
-#                       name: talk2me-backend
-#                       port:
-#                         number: 80
-#                 - path: /
-#                   pathType: Prefix
-#                   backend:
-#                     service:
-#                       name: talk2me-frontend
-#                       port:
-#                         number: 80
-#           EOF
-#           else
-#             # Generate ingress configuration with TLS and correct indentation
-#             cat << EOF > deployments/ingress.yaml
-#           apiVersion: networking.k8s.io/v1
-#           kind: Ingress
-#           metadata:
-#             name: talk2me-ingress
-#             namespace: talk2me
-#             annotations:
-#                 kubernetes.io/ingress.class: "alb"
-#                 alb.ingress.kubernetes.io/scheme: internet-facing
-#                 alb.ingress.kubernetes.io/target-type: ip
-#                 alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-#                 alb.ingress.kubernetes.io/ssl-redirect: '443'
-#                 alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
-#                 external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
-#                 alb.ingress.kubernetes.io/healthcheck-path: "/"
-#                 alb.ingress.kubernetes.io/success-codes: "200,302"
-#                 alb.ingress.kubernetes.io/group.name: "talk2me"
-#             spec:
-#             rules:
-#             - host: talk2me-gen-z.com  # Main domain for frontend
-#                 http:
-#                 paths:
-#                 - path: /
-#                     pathType: Prefix
-#                     backend:
-#                     service:
-#                         name: talk2me-frontend
-#                         port:
-#                         number: 80
-#             - host: api.talk2me-gen-z.com  # Subdomain for API
-#                 http:
-#                 paths:
-#                 - path: /
-#                     pathType: Prefix
-#                     backend:
-#                     service:
-#                         name: talk2me-backend
-#                         port:
-#                         number: 80
-#           EOF
-#           fi
+          # Generate ingress configuration based on certificate availability
+          if [ -z "$CERT_ARN" ]; then
+            echo "::warning::No certificate found for talk2me-gen-z.com, using simplified ingress configuration"
+            # Generate simplified ingress with correct indentation
+            cat << EOF > deployments/ingress.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: ${NAMESPACE}
+            annotations:
+              kubernetes.io/ingress.class: "alb"
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+          spec:
+            rules:
+            - http:
+                paths:
+                - path: /api
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-backend
+                      port:
+                        number: 80
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-frontend
+                      port:
+                        number: 80
+          EOF
+          else
+            # Generate ingress configuration with TLS and correct indentation
+            cat << EOF > deployments/ingress.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: talk2me
+            annotations:
+                kubernetes.io/ingress.class: "alb"
+                alb.ingress.kubernetes.io/scheme: internet-facing
+                alb.ingress.kubernetes.io/target-type: ip
+                alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+                alb.ingress.kubernetes.io/ssl-redirect: '443'
+                alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+                external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
+                alb.ingress.kubernetes.io/healthcheck-path: "/"
+                alb.ingress.kubernetes.io/success-codes: "200,302"
+                alb.ingress.kubernetes.io/group.name: "talk2me"
+            spec:
+            rules:
+            - host: talk2me-gen-z.com  # Main domain for frontend
+                http:
+                paths:
+                - path: /
+                    pathType: Prefix
+                    backend:
+                    service:
+                        name: talk2me-frontend
+                        port:
+                        number: 80
+            - host: api.talk2me-gen-z.com  # Subdomain for API
+                http:
+                paths:
+                - path: /
+                    pathType: Prefix
+                    backend:
+                    service:
+                        name: talk2me-backend
+                        port:
+                        number: 80
+          EOF
+          fi
           
-#           # Debug: Print the generated YAML files
-#           echo "Generated backend deployment YAML:"
-#           cat deployments/backend-deployment.yaml
+          # Debug: Print the generated YAML files
+          echo "Generated backend deployment YAML:"
+          cat deployments/backend-deployment.yaml
           
-#           echo "Generated frontend deployment YAML:"
-#           cat deployments/frontend-deployment.yaml
+          echo "Generated frontend deployment YAML:"
+          cat deployments/frontend-deployment.yaml
           
-#           echo "Generated ingress YAML:"
-#           cat deployments/ingress.yaml
+          echo "Generated ingress YAML:"
+          cat deployments/ingress.yaml
           
-#           # Apply all deployment manifests
-#           kubectl apply -f deployments/backend-deployment.yaml
-#           kubectl apply -f deployments/frontend-deployment.yaml
-#           kubectl apply -f deployments/ingress.yaml
+          # Apply all deployment manifests
+          kubectl apply -f deployments/backend-deployment.yaml
+          kubectl apply -f deployments/frontend-deployment.yaml
+          kubectl apply -f deployments/ingress.yaml
           
-#           # List all applied resources
-#           echo "Deployed resources in namespace ${NAMESPACE}:"
-#           kubectl get all -n ${NAMESPACE}
+          # List all applied resources
+          echo "Deployed resources in namespace ${NAMESPACE}:"
+          kubectl get all -n ${NAMESPACE}
 
-#       # Verify deployment with timeouts and error handling
-#       - name: Verify deployment
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         run: |
-#           echo "Verifying backend deployment..."
-#           kubectl rollout status deployment/talk2me-backend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
-#             echo "Warning: Backend deployment verification timed out"
-#             echo "Current pods status:"
-#             kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-backend -o wide
-#             echo "Recent pod events:"
-#             kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep backend || true
-#           }
+      # Verify deployment with timeouts and error handling
+      - name: Verify deployment
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          echo "Verifying backend deployment..."
+          kubectl rollout status deployment/talk2me-backend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Backend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-backend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep backend || true
+          }
           
-#           echo "Verifying frontend deployment..."
-#           kubectl rollout status deployment/talk2me-frontend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
-#             echo "Warning: Frontend deployment verification timed out"
-#             echo "Current pods status:"
-#             kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-frontend -o wide
-#             echo "Recent pod events:"
-#             kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep frontend || true
-#           }
+          echo "Verifying frontend deployment..."
+          kubectl rollout status deployment/talk2me-frontend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Frontend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-frontend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep frontend || true
+          }
 
-#       # Get service details
-#       - name: Get service information
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         run: |
-#           echo "Service information for namespace ${{ steps.vars.outputs.namespace }}:"
-#           kubectl get services -n ${{ steps.vars.outputs.namespace }}
+      # Get service details
+      - name: Get service information
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          echo "Service information for namespace ${{ steps.vars.outputs.namespace }}:"
+          kubectl get services -n ${{ steps.vars.outputs.namespace }}
           
-#           # Check if ingress is available
-#           if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &>/dev/null; then
-#             echo "Ingress information:"
-#             kubectl get ingress -n ${{ steps.vars.outputs.namespace }}
-#             echo "Application should be accessible via the above ingress address"
-#           else
-#             echo "No ingress found. The application may be accessible via ClusterIP or LoadBalancer services."
-#           fi
+          # Check if ingress is available
+          if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &>/dev/null; then
+            echo "Ingress information:"
+            kubectl get ingress -n ${{ steps.vars.outputs.namespace }}
+            echo "Application should be accessible via the above ingress address"
+          else
+            echo "No ingress found. The application may be accessible via ClusterIP or LoadBalancer services."
+          fi
           
-#           echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
           
-#       # Save deployment results
-#       - name: Save deployment results
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         run: |
-#           # Create deployment summary
-#           cat << EOF > deployment-summary.md
-#           # Deployment Summary
+      # Save deployment results
+      - name: Save deployment results
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          # Create deployment summary
+          cat << EOF > deployment-summary.md
+          # Deployment Summary
           
-#           ## Details
-#           - Namespace: ${{ steps.vars.outputs.namespace }}
-#           - Image Tag: ${{ steps.vars.outputs.image_tag }}
-#           - Deployed At: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          ## Details
+          - Namespace: ${{ steps.vars.outputs.namespace }}
+          - Image Tag: ${{ steps.vars.outputs.image_tag }}
+          - Deployed At: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
           
-#           ## Resources
-#           \`\`\`
-#           $(kubectl get pods,svc,ingress -n ${{ steps.vars.outputs.namespace }})
-#           \`\`\`
+          ## Resources
+          \`\`\`
+          $(kubectl get pods,svc,ingress -n ${{ steps.vars.outputs.namespace }})
+          \`\`\`
           
-#           ## Access Information
-#           - Frontend URL: https://talk2me-gen-z.com
-#           - API URL: https://api.talk2me-gen-z.com
+          ## Access Information
+          - Frontend URL: https://talk2me-gen-z.com
+          - API URL: https://api.talk2me-gen-z.com
           
-#           ## Deployment Status
-#           - Backend: $(kubectl get deployment talk2me-backend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
-#           - Frontend: $(kubectl get deployment talk2me-frontend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
-#           EOF
+          ## Deployment Status
+          - Backend: $(kubectl get deployment talk2me-backend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+          - Frontend: $(kubectl get deployment talk2me-frontend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+          EOF
 
-#       - name: Upload deployment results
-#         if: steps.cluster-check.outputs.exists == 'true'
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: deployment-results
-#           path: deployment-summary.md
-#           retention-days: 7
+      - name: Upload deployment results
+        if: steps.cluster-check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-results
+          path: deployment-summary.md
+          retention-days: 7
           
-#       # Create summary for failed cluster
-#       - name: Create failure summary
-#         if: steps.cluster-check.outputs.exists != 'true'
-#         run: |
-#           echo "## Deployment Failed" >> $GITHUB_STEP_SUMMARY
-#           echo "The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**." >> $GITHUB_STEP_SUMMARY
-#           echo "" >> $GITHUB_STEP_SUMMARY
-#           echo "### Troubleshooting Steps" >> $GITHUB_STEP_SUMMARY
-#           echo "1. Verify the cluster name is correct" >> $GITHUB_STEP_SUMMARY
-#           echo "2. Check that the cluster exists in the specified AWS region" >> $GITHUB_STEP_SUMMARY
-#           echo "3. Ensure the GitHub Actions role has permission to access EKS" >> $GITHUB_STEP_SUMMARY
-#           echo "4. Try running the workflow again with the correct cluster name and region" >> $GITHUB_STEP_SUMMARY
+      # Create summary for failed cluster
+      - name: Create failure summary
+        if: steps.cluster-check.outputs.exists != 'true'
+        run: |
+          echo "## Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          echo "The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Troubleshooting Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Verify the cluster name is correct" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check that the cluster exists in the specified AWS region" >> $GITHUB_STEP_SUMMARY
+          echo "3. Ensure the GitHub Actions role has permission to access EKS" >> $GITHUB_STEP_SUMMARY
+          echo "4. Try running the workflow again with the correct cluster name and region" >> $GITHUB_STEP_SUMMARY
           
-#           # Create a failure artifact as well
-#           cat << EOF > deployment-failure.md
-#           # Deployment Failed
+          # Create a failure artifact as well
+          cat << EOF > deployment-failure.md
+          # Deployment Failed
           
-#           The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**.
+          The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**.
           
-#           ## AWS Identity Used
-#           \`\`\`
-#           $(aws sts get-caller-identity)
-#           \`\`\`
+          ## AWS Identity Used
+          \`\`\`
+          $(aws sts get-caller-identity)
+          \`\`\`
           
-#           ## Available EKS Clusters
-#           \`\`\`
-#           $(aws eks list-clusters --region ${{ steps.vars.outputs.aws_region }} 2>&1 || echo "Failed to list clusters")
-#           \`\`\`
+          ## Available EKS Clusters
+          \`\`\`
+          $(aws eks list-clusters --region ${{ steps.vars.outputs.aws_region }} 2>&1 || echo "Failed to list clusters")
+          \`\`\`
           
-#           ## Troubleshooting Steps
-#           1. Verify the cluster name is correct
-#           2. Check that the cluster exists in the specified AWS region
-#           3. Ensure the GitHub Actions role has permission to access EKS
-#           4. Try running the workflow again with the correct cluster name and region
-#           EOF
+          ## Troubleshooting Steps
+          1. Verify the cluster name is correct
+          2. Check that the cluster exists in the specified AWS region
+          3. Ensure the GitHub Actions role has permission to access EKS
+          4. Try running the workflow again with the correct cluster name and region
+          EOF
           
-#       - name: Upload failure results
-#         if: steps.cluster-check.outputs.exists != 'true'
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: deployment-failure
-#           path: deployment-failure.md
-#           retention-days: 7
+      - name: Upload failure results
+        if: steps.cluster-check.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-failure
+          path: deployment-failure.md
+          retention-days: 7
