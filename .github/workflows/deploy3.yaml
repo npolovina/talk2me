@@ -1,4 +1,4 @@
-# .github/workflows/deploy3.yml
+# .github/workflows/deploy.yml
 name: 3. Deploy to K8s
 
 on:
