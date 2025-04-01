@@ -109,26 +109,8 @@ jobs:
           echo "Creating Kubernetes secret..."
           DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
           
-          # Create secret configuration
-          cat << EOF > ./secret.yaml
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: talk2me-secrets
-            namespace: talk2me
-          type: Opaque
-          data:
-            deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
-          EOF
-          
           # Apply the secret
-          kubectl apply -f ./secret.yaml
-          
-          # Verify secret was created
-          kubectl get secrets -n talk2me
-          
-          # Clean up
-          rm ./secret.yaml
+          kubectl apply -f ./k8s/secret.yaml
 
       # Process and apply Kubernetes manifests
       - name: Deploy to EKS
