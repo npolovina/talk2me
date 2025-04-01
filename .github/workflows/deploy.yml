@@ -1,23 +1,23 @@
-# # .github/workflows/deploy.yml
-# name: 2. Deploy to K8s
+# .github/workflows/deploy.yml
+name: 2. Deploy to K8s
 
-# on:
-#   workflow_run:
-#     workflows: ["1. Build and Push Images"]
-#     types:
-#       - completed
-#     branches: [main]
-#   # Allow manual deployments
-#   workflow_dispatch:
-#     inputs:
-#       image_tag:
-#         description: 'Image tag to deploy (defaults to latest build)'
-#         required: false
-#         default: ''
-#       namespace:
-#         description: 'Kubernetes namespace to deploy to'
-#         required: false
-#         default: 'talk2me'
+on:
+  workflow_run:
+    workflows: ["1. Build and Push Images"]
+    types:
+      - completed
+    branches: [main]
+  # Allow manual deployments
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to latest build)'
+        required: false
+        default: ''
+      namespace:
+        description: 'Kubernetes namespace to deploy to'
+        required: false
+        default: 'talk2me'
 
 jobs:
   deploy:

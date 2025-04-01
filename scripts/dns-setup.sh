@@ -6,7 +6,7 @@ set -e
 # Configuration - Update these variables
 DOMAIN="talk2me-gen-z.com"
 API_SUBDOMAIN="api.${DOMAIN}"
-EKS_CLUSTER_NAME="talk2me-cluster"
+EKS_CLUSTER_NAME="talk2me"
 AWS_REGION="us-east-1"
 HOSTED_ZONE_ID="Z0340616WINWH51QLPE"  # Your hosted zone ID
 

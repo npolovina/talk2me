@@ -510,3 +510,58 @@
 2025-04-01 11:21:17,692 - talk2me - INFO - Response length: 798 characters
 2025-04-01 11:21:17,693 - talk2me - INFO - Successfully generated AI response
 2025-04-01 11:21:17,695 - talk2me - INFO - Request 1743520861.364006 completed with status code 200
+2025-04-01 19:32:45,075 - talk2me - INFO - Request 1743550365.06796 started: OPTIONS /api/chat
+2025-04-01 19:32:45,091 - talk2me - INFO - Request origin: http://localhost:3000
+2025-04-01 19:32:45,112 - talk2me - INFO - Request 1743550365.06796 completed with status code 200
+2025-04-01 19:32:45,139 - talk2me - INFO - Request 1743550365.1398578 started: POST /api/chat
+2025-04-01 19:32:45,140 - talk2me - INFO - Request origin: http://localhost:3000
+2025-04-01 19:32:45,186 - talk2me - INFO - Chat request received, message length: 26
+2025-04-01 19:32:45,273 - talk2me - INFO - Detected language: en
+2025-04-01 19:32:45,274 - talk2me - INFO - Detected categories: []
+2025-04-01 19:32:45,275 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-04-01 19:32:45,276 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-04-01 19:32:54,944 - talk2me - INFO - DeepSeek API response status: 200
+2025-04-01 19:32:54,945 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Tue, 01 Apr 2025 23:32:45 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '49050f4560bbab7f7a03f626dac904ef', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=WEcaZwwPzlSgW9It6kbh.A7q9Edbn1w7cSLwcaqXDzg-1743550365-1.0.1.1-2pNqsaZvHt5.v3JO8M9sgYZ739BFl8If.iPfw6phC05cpWi14ykDct9p1uQgl2AUJLBTuENqup8noTWjS5PTHIBVCg8irvPjkr.i.5oFi_A; path=/; expires=Wed, 02-Apr-25 00:02:45 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '929be337ce673350-EWR', 'Content-Encoding': 'gzip'}
+2025-04-01 19:32:54,960 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-04-01 19:32:54,961 - talk2me - INFO - Full response structure: {
+  "id": "0b6e1c3f-1f43-40ad-aec5-13b3f1153379",
+  "object": "chat.completion",
+  "created": 1743550365,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Aw, that sucks! \ud83d\ude15 What\u2019s going on? Are you feeling tired, achy, or something else? Let me know so I can help\u2014whether it\u2019s rest tips, hydration reminders, or just sending good vibes your way. \ud83d\udc99 (Also, soup and cozy blankets...
+2025-04-01 19:32:54,961 - talk2me - INFO - Extracted response from standard path: choices[0].message.content
+2025-04-01 19:32:54,962 - talk2me - INFO - Received valid response from DeepSeek API
+2025-04-01 19:32:54,962 - talk2me - INFO - Response length: 241 characters
+2025-04-01 19:32:54,963 - talk2me - INFO - Successfully generated AI response
+2025-04-01 19:32:54,983 - talk2me - INFO - Request 1743550365.1398578 completed with status code 200
+2025-04-01 19:33:38,291 - talk2me - INFO - Request 1743550418.2913818 started: POST /api/chat
+2025-04-01 19:33:38,291 - talk2me - INFO - Request origin: http://localhost:3000
+2025-04-01 19:33:38,292 - talk2me - INFO - Chat request received, message length: 18
+2025-04-01 19:33:38,344 - talk2me - INFO - Detected language: en
+2025-04-01 19:33:38,344 - talk2me - INFO - Detected categories: ['sexual_health']
+2025-04-01 19:33:38,344 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-04-01 19:33:38,344 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-04-01 19:33:49,837 - talk2me - INFO - DeepSeek API response status: 200
+2025-04-01 19:33:49,837 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Tue, 01 Apr 2025 23:33:38 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '2b68a9bc8e3ca7c6a2b5346e21fa523f', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=7M.VVgEM.Qr1N4aFMLoQHvqiONt1Vpr0UbdBKFMO9n0-1743550418-1.0.1.1-ogQt6IjsEsU8UJyhyPm_2Iir8nRVCWtePi9CrmvJqOxQhXt4lbkPpg9JmnSgoXYAJeKVS2vHB8nC.U_67U3Cdoey49FGOxXy0j.1z3xQpTk; path=/; expires=Wed, 02-Apr-25 00:03:38 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '929be4811cd5438b-EWR', 'Content-Encoding': 'gzip'}
+2025-04-01 19:33:49,838 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-04-01 19:33:49,839 - talk2me - INFO - Full response structure: {
+  "id": "539e2147-3ed1-4603-ba65-83b97b387283",
+  "object": "chat.completion",
+  "created": 1743550418,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hey! If you're looking for abortion resources, here are some helpful places to start:  \n\n- **Planned Parenthood**: Offers info on abortion options, costs, and clinics. [plannedparenthood.org](https://www.plannedparenthood.org)  \n- **Abortion Finder**: Help...
+2025-04-01 19:33:49,839 - talk2me - INFO - Extracted response from standard path: choices[0].message.content
+2025-04-01 19:33:49,840 - talk2me - INFO - Received valid response from DeepSeek API
+2025-04-01 19:33:49,840 - talk2me - INFO - Response length: 743 characters
+2025-04-01 19:33:49,841 - talk2me - INFO - Successfully generated AI response
+2025-04-01 19:33:49,842 - talk2me - INFO - Request 1743550418.2913818 completed with status code 200

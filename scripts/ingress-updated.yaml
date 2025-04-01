@@ -10,7 +10,7 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
-    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:637423575947:certificate/69e87999-cbb0-4de4-911c-0468ce855781"
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:637423575947:certificate/c3970434-f97a-47b0-8856-acf9213f9f29"
     alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
     external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
 spec:
