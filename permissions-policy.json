@@ -1,0 +1,24 @@
+# Create permissions policy
+echo "Creating permissions policy..."
+cat > permissions-policy.json << EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "eks:*",
+        "ec2:*",
+        "elasticloadbalancing:*",
+        "iam:ListRoles",
+        "iam:GetRole",
+        "iam:PassRole",
+        "ecr:*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
