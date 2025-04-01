@@ -57,9 +57,6 @@ fi
 # Create permissions policy
 echo -e "${YELLOW}Creating permissions policy...${NC}"
 cat > permissions-policy.json << EOF
-# Create permissions policy
-echo "Creating permissions policy..."
-cat > permissions-policy.json << EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -75,16 +72,15 @@ cat > permissions-policy.json << EOF
         "iam:ListRoles",
         "iam:GetRole",
         "iam:PassRole",
-        "ecr:*"
+        "iam:CreateServiceLinkedRole",
+        "cloudformation:*",
+        "ecr:*",
+        "cloudwatch:*"
       ],
       "Resource": "*"
     }
   ]
 }
-EOF
-
-# Create the policy
-POLICY_ARN=$(aws iam create-policy --policy-name ${IAM_PERMISSION_POLICY_NAME} --policy-document file://permissions-policy.json --query 'Policy.Arn' --output text)
 EOF
 
 # Check if the policy already exists
@@ -123,4 +119,3 @@ echo -e "${GREEN}role-to-assume: ${ROLE_ARN}${NC}"
 
 # Cleanup
 rm -f trust-policy.json permissions-policy.json
-
