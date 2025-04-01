@@ -129,3 +129,15 @@
 #             build_time.txt
 #             build_info.md
 #           retention-days: 7
+
+
+
+
+            # Update EKS aws-auth ConfigMap
+            echo "Updating aws-auth ConfigMap..."
+            eksctl create iamidentitymapping \
+                --cluster "${CLUSTER_NAME}" \
+                --region "${REGION}" \
+                --arn "${ROLE_ARN}" \
+                --username "${ROLE_NAME}" \
+                --group "system:masters"
