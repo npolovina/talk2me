@@ -171,17 +171,8 @@ jobs:
       # Trigger deployment workflow if requested
       - name: Trigger deployment workflow
         if: ${{ github.event_name != 'pull_request' && (github.event.inputs.run_deployment == 'true' || github.event.inputs.run_deployment == '') }}
-        uses: actions/github-script@v6
+        uses: benc-uk/workflow-dispatch@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'deploy.yml',
-              ref: '${{ github.ref_name }}',
-              inputs: {
-                image_tag: '${{ steps.vars.outputs.image_tag }}'
-              }
-            });
-            console.log('Deployment workflow triggered');
+          workflow: deploy.yml
+          token: ${{ secrets.PAT_TOKEN }}
+          inputs: '{"image_tag": "${{ steps.vars.outputs.image_tag }}"}'
