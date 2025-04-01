@@ -101,7 +101,7 @@ jobs:
             # Store cluster name in outputs
             echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
             echo "region=$REGION" >> $GITHUB_OUTPUT
-            
+
       - name: Set up GitHub permissions for EKS
         id: set-up-github-permissions
         run: |
@@ -174,7 +174,7 @@ jobs:
           
           # Attach necessary policies
           aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-          aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonECR-FullAccess"
+          aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonContainerRegistryPublicFullAccess"
           
           # Update EKS aws-auth ConfigMap
           echo "Updating aws-auth ConfigMap..."
@@ -182,7 +182,7 @@ jobs:
             --cluster "${CLUSTER_NAME}" \
             --region "${REGION}" \
             --arn "${ROLE_ARN}" \
-            --username "github-actions" \
+            --username "github-actions-talk2me-role" \
             --group "system:masters"
           
           echo "GitHub permissions for EKS set up successfully"
