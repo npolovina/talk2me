@@ -1,4 +1,4 @@
-# .github/workflows/deploy.yml
+# .github/workflows/deploy3.yml
 name: 3. Deploy to K8s
 
 on:
@@ -19,7 +19,7 @@ on:
         required: false
         default: 'talk2me'
       run_verification:
-        description: 'Run verification workflow after deployment'
+        description: 'Run verification workflow after '
         required: false
         default: 'true'
         type: boolean
@@ -344,14 +344,14 @@ jobs:
             # Create ServiceAccount for ALB controller
             echo "Creating ServiceAccount for ALB controller..."
             cat << EOF > deployments/alb-controller-sa.yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: aws-load-balancer-controller
-  namespace: kube-system
-  annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKSLoadBalancerControllerRole
-EOF
+              apiVersion: v1
+              kind: ServiceAccount
+              metadata:
+                name: aws-load-balancer-controller
+                namespace: kube-system
+                annotations:
+                  eks.amazonaws.com/role-arn: arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKSLoadBalancerControllerRole
+              EOF
             
             kubectl apply -f deployments/alb-controller-sa.yaml
             
@@ -376,9 +376,9 @@ EOF
                 
             echo "Waiting for ALB controller to be ready..."
             kubectl rollout status deployment aws-load-balancer-controller -n kube-system --timeout=180s
-          else
-            echo "ALB controller already installed."
-          fi
+            else
+              echo "ALB controller already installed."
+            fi
           
           # Step 3: Install ExternalDNS if needed
           echo "Step 3: Setting up ExternalDNS..."
@@ -392,31 +392,31 @@ EOF
             if [ -z "$EXTERNAL_DNS_POLICY_EXISTS" ]; then
               echo "Creating IAM policy for ExternalDNS..."
               cat << EOF > external-dns-policy.json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "route53:ChangeResourceRecordSets"
-      ],
-      "Resource": [
-        "arn:aws:route53:::hostedzone/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "route53:ListHostedZones",
-        "route53:ListResourceRecordSets"
-      ],
-      "Resource": [
-        "*"
-      ]
-    }
-  ]
-}
-EOF
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Action": [
+                        "route53:ChangeResourceRecordSets"
+                      ],
+                      "Resource": [
+                        "arn:aws:route53:::hostedzone/*"
+                      ]
+                    },
+                    {
+                      "Effect": "Allow",
+                      "Action": [
+                        "route53:ListHostedZones",
+                        "route53:ListResourceRecordSets"
+                      ],
+                      "Resource": [
+                        "*"
+                      ]
+                    }
+                  ]
+                }
+                EOF
               
               # Create policy
               EXTERNAL_DNS_POLICY_ARN=$(aws iam create-policy \
@@ -433,51 +433,51 @@ EOF
             # Create ServiceAccount for ExternalDNS
             echo "Creating ServiceAccount for ExternalDNS..."
             cat << EOF > deployments/external-dns-sa.yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: external-dns
-  namespace: kube-system
-  annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::${AWS_ACCOUNT_ID}:role/ExternalDNSRole
-EOF
+              apiVersion: v1
+              kind: ServiceAccount
+              metadata:
+                name: external-dns
+                namespace: kube-system
+                annotations:
+                  eks.amazonaws.com/role-arn: arn:aws:iam::${AWS_ACCOUNT_ID}:role/ExternalDNSRole
+              EOF
             
             kubectl apply -f deployments/external-dns-sa.yaml
             
             # Deploy ExternalDNS
             echo "Deploying ExternalDNS..."
             cat << EOF > deployments/external-dns.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: external-dns
-  namespace: kube-system
-spec:
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: external-dns
-  template:
-    metadata:
-      labels:
-        app: external-dns
-    spec:
-      serviceAccountName: external-dns
-      containers:
-      - name: external-dns
-        image: registry.k8s.io/external-dns/external-dns:v0.13.5
-        args:
-        - --source=service
-        - --source=ingress
-        - --domain-filter=${DOMAIN}
-        - --provider=aws
-        - --aws-zone-type=public
-        - --registry=txt
-        - --txt-owner-id=my-cluster-identifier
-      securityContext:
-        fsGroup: 65534
-EOF
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: external-dns
+              namespace: kube-system
+            spec:
+              strategy:
+                type: Recreate
+              selector:
+                matchLabels:
+                  app: external-dns
+              template:
+                metadata:
+                  labels:
+                    app: external-dns
+                spec:
+                  serviceAccountName: external-dns
+                  containers:
+                  - name: external-dns
+                    image: registry.k8s.io/external-dns/external-dns:v0.13.5
+                    args:
+                    - --source=service
+                    - --source=ingress
+                    - --domain-filter=${DOMAIN}
+                    - --provider=aws
+                    - --aws-zone-type=public
+                    - --registry=txt
+                    - --txt-owner-id=my-cluster-identifier
+                  securityContext:
+                    fsGroup: 65534
+            EOF
             
             kubectl apply -f deployments/external-dns.yaml
             
@@ -503,215 +503,215 @@ EOF
           
           # Generate backend deployment
           cat << EOF > deployments/backend-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: talk2me-backend
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: talk2me-backend
-  template:
-    metadata:
-      labels:
-        app: talk2me-backend
-    spec:
-      containers:
-      - name: backend
-        image: ${REGISTRY}/talk2me-backend:${IMAGE_TAG}
-        ports:
-        - containerPort: 8000
-        env:
-        - name: DEEPSEEK_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: talk2me-secrets
-              key: deepseek-api-key
-        resources:
-          limits:
-            cpu: "500m"
-            memory: "512Mi"
-          requests:
-            cpu: "250m"
-            memory: "256Mi"
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 10
-          periodSeconds: 5
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 15
-          periodSeconds: 20
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: talk2me-backend
-  namespace: ${NAMESPACE}
-  annotations:
-    external-dns.alpha.kubernetes.io/hostname: "${API_DOMAIN}"
-spec:
-  selector:
-    app: talk2me-backend
-  ports:
-  - port: 80
-    targetPort: 8000
-  type: ClusterIP
-EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-backend
+            namespace: ${NAMESPACE}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-backend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-backend
+              spec:
+                containers:
+                - name: backend
+                  image: ${REGISTRY}/talk2me-backend:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: DEEPSEEK_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: talk2me-secrets
+                        key: deepseek-api-key
+                  resources:
+                    limits:
+                      cpu: "500m"
+                      memory: "512Mi"
+                    requests:
+                      cpu: "250m"
+                      memory: "256Mi"
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 10
+                    periodSeconds: 5
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 15
+                    periodSeconds: 20
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-backend
+            namespace: ${NAMESPACE}
+            annotations:
+              external-dns.alpha.kubernetes.io/hostname: "${API_DOMAIN}"
+          spec:
+            selector:
+              app: talk2me-backend
+            ports:
+            - port: 80
+              targetPort: 8000
+            type: ClusterIP
+          EOF
           
           # Generate frontend deployment
           cat << EOF > deployments/frontend-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: talk2me-frontend
-  namespace: ${NAMESPACE}
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: talk2me-frontend
-  template:
-    metadata:
-      labels:
-        app: talk2me-frontend
-    spec:
-      containers:
-      - name: frontend
-        image: ${REGISTRY}/talk2me-frontend:${IMAGE_TAG}
-        ports:
-        - containerPort: 80
-        env:
-        - name: API_URL
-          value: "https://${API_DOMAIN}"
-        resources:
-          limits:
-            cpu: "300m"
-            memory: "256Mi"
-          requests:
-            cpu: "100m"
-            memory: "128Mi"
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 10
-          periodSeconds: 5
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 15
-          periodSeconds: 20
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: talk2me-frontend
-  namespace: ${NAMESPACE}
-  annotations:
-    external-dns.alpha.kubernetes.io/hostname: "${DOMAIN}"
-spec:
-  selector:
-    app: talk2me-frontend
-  ports:
-  - port: 80
-    targetPort: 80
-  type: ClusterIP
-EOF
-          
-          # Configure ingress based on certificate availability
-          if [ -n "$CERT_ARN" ]; then
-            echo "Configuring ingress with SSL certificate..."
-            # Generate ingress with TLS
-            cat << EOF > deployments/ingress.yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: talk2me-ingress
-  namespace: ${NAMESPACE}
-  annotations:
-    kubernetes.io/ingress.class: "alb"
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-    alb.ingress.kubernetes.io/ssl-redirect: '443'
-    alb.ingress.kubernetes.io/certificate-arn: "${CERT_ARN}"
-    alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
-    external-dns.alpha.kubernetes.io/hostname: "${DOMAIN},${API_DOMAIN}"
-    alb.ingress.kubernetes.io/healthcheck-path: "/"
-    alb.ingress.kubernetes.io/success-codes: "200,302"
-    alb.ingress.kubernetes.io/group.name: "talk2me"
-spec:
-  rules:
-  - host: ${DOMAIN}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
             name: talk2me-frontend
-            port:
-              number: 80
-  - host: ${API_DOMAIN}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: talk2me-backend
-            port:
-              number: 80
-EOF
-          else
-            echo "Configuring ingress without SSL (HTTP only)..."
-            # Generate simplified ingress
-            cat << EOF > deployments/ingress.yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: talk2me-ingress
-  namespace: ${NAMESPACE}
-  annotations:
-    kubernetes.io/ingress.class: "alb"
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    external-dns.alpha.kubernetes.io/hostname: "${DOMAIN},${API_DOMAIN}"
-    alb.ingress.kubernetes.io/healthcheck-path: "/"
-    alb.ingress.kubernetes.io/success-codes: "200,302"
-    alb.ingress.kubernetes.io/group.name: "talk2me"
-spec:
-  rules:
-  - host: ${DOMAIN}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
+            namespace: ${NAMESPACE}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-frontend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-frontend
+              spec:
+                containers:
+                - name: frontend
+                  image: ${REGISTRY}/talk2me-frontend:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 80
+                  env:
+                  - name: API_URL
+                    value: "https://${API_DOMAIN}"
+                  resources:
+                    limits:
+                      cpu: "300m"
+                      memory: "256Mi"
+                    requests:
+                      cpu: "100m"
+                      memory: "128Mi"
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: 80
+                    initialDelaySeconds: 10
+                    periodSeconds: 5
+                  livenessProbe:
+                    httpGet:
+                      path: /
+                      port: 80
+                    initialDelaySeconds: 15
+                    periodSeconds: 20
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
             name: talk2me-frontend
-            port:
-              number: 80
-  - host: ${API_DOMAIN}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: talk2me-backend
-            port:
-              number: 80
-EOF
-          fi
+            namespace: ${NAMESPACE}
+            annotations:
+              external-dns.alpha.kubernetes.io/hostname: "${DOMAIN}"
+          spec:
+            selector:
+              app: talk2me-frontend
+            ports:
+            - port: 80
+              targetPort: 80
+            type: ClusterIP
+          EOF
+                    
+                    # Configure ingress based on certificate availability
+                    if [ -n "$CERT_ARN" ]; then
+                      echo "Configuring ingress with SSL certificate..."
+                      # Generate ingress with TLS
+                      cat << EOF > deployments/ingress.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: ${NAMESPACE}
+            annotations:
+              kubernetes.io/ingress.class: "alb"
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/certificate-arn: "${CERT_ARN}"
+              alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+              external-dns.alpha.kubernetes.io/hostname: "${DOMAIN},${API_DOMAIN}"
+              alb.ingress.kubernetes.io/healthcheck-path: "/"
+              alb.ingress.kubernetes.io/success-codes: "200,302"
+              alb.ingress.kubernetes.io/group.name: "talk2me"
+          spec:
+            rules:
+            - host: ${DOMAIN}
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-frontend
+                      port:
+                        number: 80
+            - host: ${API_DOMAIN}
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-backend
+                      port:
+                        number: 80
+          EOF
+                    else
+                      echo "Configuring ingress without SSL (HTTP only)..."
+                      # Generate simplified ingress
+                      cat << EOF > deployments/ingress.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: ${NAMESPACE}
+            annotations:
+              kubernetes.io/ingress.class: "alb"
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              external-dns.alpha.kubernetes.io/hostname: "${DOMAIN},${API_DOMAIN}"
+              alb.ingress.kubernetes.io/healthcheck-path: "/"
+              alb.ingress.kubernetes.io/success-codes: "200,302"
+              alb.ingress.kubernetes.io/group.name: "talk2me"
+          spec:
+            rules:
+            - host: ${DOMAIN}
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-frontend
+                      port:
+                        number: 80
+            - host: ${API_DOMAIN}
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-backend
+                      port:
+                        number: 80
+          EOF
+                    fi
           
           # Step 6: Apply the Kubernetes manifests
           echo "Step 6: Applying Kubernetes manifests..."
@@ -738,35 +738,35 @@ EOF
               
               # Create A record alias for main domain
               cat << EOF > dns-change.json
-{
-  "Changes": [
-    {
-      "Action": "UPSERT",
-      "ResourceRecordSet": {
-        "Name": "${DOMAIN}",
-        "Type": "A",
-        "AliasTarget": {
-          "HostedZoneId": "Z2FDTNDATAQYW2",
-          "DNSName": "${ALB_DNS}",
-          "EvaluateTargetHealth": true
-        }
-      }
-    },
-    {
-      "Action": "UPSERT",
-      "ResourceRecordSet": {
-        "Name": "${API_DOMAIN}",
-        "Type": "A",
-        "AliasTarget": {
-          "HostedZoneId": "Z2FDTNDATAQYW2",
-          "DNSName": "${ALB_DNS}",
-          "EvaluateTargetHealth": true
-        }
-      }
-    }
-  ]
-}
-EOF
+              {
+                "Changes": [
+                  {
+                    "Action": "UPSERT",
+                    "ResourceRecordSet": {
+                      "Name": "${DOMAIN}",
+                      "Type": "A",
+                      "AliasTarget": {
+                        "HostedZoneId": "Z2FDTNDATAQYW2",
+                        "DNSName": "${ALB_DNS}",
+                        "EvaluateTargetHealth": true
+                      }
+                    }
+                  },
+                  {
+                    "Action": "UPSERT",
+                    "ResourceRecordSet": {
+                      "Name": "${API_DOMAIN}",
+                      "Type": "A",
+                      "AliasTarget": {
+                        "HostedZoneId": "Z2FDTNDATAQYW2",
+                        "DNSName": "${ALB_DNS}",
+                        "EvaluateTargetHealth": true
+                      }
+                    }
+                  }
+                ]
+              }
+              EOF
               
               aws route53 change-resource-record-sets --hosted-zone-id ${HOSTED_ZONE_ID} --change-batch file://dns-change.json
                 echo "DNS records created/updated for ${DOMAIN} and ${API_DOMAIN}"
