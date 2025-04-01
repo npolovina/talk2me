@@ -2,23 +2,11 @@
 name: 2. Build and Push Images
 
 on:
-  push:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
-      - '.github/workflows/infrastructure.yml'
-      - '.github/workflows/verify.yml'
-  pull_request:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
-      - 'k8s/**'
-      - '.github/workflows/deploy.yml'
-      - '.github/workflows/infrastructure.yml'
-      - '.github/workflows/verify.yml'
-  # Allow manual triggering
+  workflow_run:
+    workflows: ["1. Setup Infrastructure"]
+    types:
+      - completed
+    branches: [main]
   workflow_dispatch:
     inputs:
       run_deployment:
@@ -26,7 +14,6 @@ on:
         required: false
         default: 'true'
         type: boolean
-
 jobs:
   build-and-push:
     runs-on: ubuntu-latest

@@ -41,10 +41,10 @@ jobs:
       contents: read
     
     steps:
+      # Initial Setup Steps
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Download artifacts from the triggering workflow (only for workflow_run trigger)
       - name: Download artifacts from workflow
         if: ${{ github.event_name == 'workflow_run' }}
         uses: dawidd6/action-download-artifact@v2
@@ -54,7 +54,7 @@ jobs:
           path: ./deployment-info
           workflow_conclusion: success
           
-      # Configure AWS credentials
+      # AWS Configuration
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -62,7 +62,6 @@ jobs:
           aws-region: ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}
           mask-aws-account-id: false # Show account ID for better debugging
 
-      # Verify AWS authentication
       - name: Verify AWS authentication
         run: |
           echo "Verifying AWS authentication:"
@@ -78,25 +77,23 @@ jobs:
           echo "Available EKS clusters in region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }}:"
           aws eks list-clusters --region ${{ github.event.inputs.aws_region || secrets.AWS_REGION }} || echo "Failed to list clusters, check permissions"
 
-      # Install kubectl
+      # Kubernetes Tools Installation
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: 'latest'
           
-      # Install Helm
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
           version: 'latest'
 
-      # Get AWS account ID
+      # Environment Configuration
       - name: Get AWS account ID
         id: aws-account
         run: |
           echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
 
-      # Set image tag based on input or artifact
       - name: Set image tag
         id: vars
         run: |
@@ -152,7 +149,7 @@ jobs:
             echo "Warning: No image tag found, using 'latest' instead"
           fi
 
-      # Check if EKS cluster exists
+      # Cluster Validation
       - name: Check if EKS cluster exists
         id: cluster-check
         run: |
@@ -175,7 +172,7 @@ jobs:
             exit 1
           fi
 
-      # Update kubeconfig to connect to EKS cluster
+      # Kubernetes Configuration
       - name: Update kubeconfig for EKS cluster
         if: steps.cluster-check.outputs.exists == 'true'
         run: |
@@ -196,14 +193,14 @@ jobs:
             exit 1
           }
 
-      # Create namespace if it doesn't exist
+      # Namespace Setup
       - name: Ensure namespace exists
         if: steps.cluster-check.outputs.exists == 'true'
         run: |
           echo "Creating namespace ${{ steps.vars.outputs.namespace }} if it doesn't exist..."
           kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
 
-      # Update Kubernetes secrets
+      # Secret Management
       - name: Update Kubernetes secrets
         if: steps.cluster-check.outputs.exists == 'true'
         run: |
@@ -232,7 +229,7 @@ jobs:
           kubectl apply -f ./secret.yaml
           rm ./secret.yaml
 
-      # Deploy to EKS with Complete SSL, DNS, and IAM Configuration
+      # Main Deployment Step
       - name: Deploy to EKS with SSL, DNS, and IAM setup
         if: steps.cluster-check.outputs.exists == 'true'
         run: |
@@ -501,10 +498,10 @@ EOF
             echo "Found hosted zone ID: ${HOSTED_ZONE_ID}"
           fi
           
-          # Step 5: Generate and deploy Kubernetes manifests
+          # Step 5: Generate Kubernetes manifests
           echo "Step 5: Generating Kubernetes manifests..."
           
-          # Generate backend deployment with correct indentation
+          # Generate backend deployment
           cat << EOF > deployments/backend-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -568,7 +565,7 @@ spec:
   type: ClusterIP
 EOF
           
-          # Generate frontend deployment with correct indentation
+          # Generate frontend deployment
           cat << EOF > deployments/frontend-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -632,7 +629,7 @@ EOF
           # Configure ingress based on certificate availability
           if [ -n "$CERT_ARN" ]; then
             echo "Configuring ingress with SSL certificate..."
-            # Generate ingress with TLS and correct indentation
+            # Generate ingress with TLS
             cat << EOF > deployments/ingress.yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -676,7 +673,7 @@ spec:
 EOF
           else
             echo "Configuring ingress without SSL (HTTP only)..."
-            # Generate simplified ingress with correct indentation
+            # Generate simplified ingress
             cat << EOF > deployments/ingress.yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -768,10 +765,10 @@ EOF
       }
     }
   ]
-  }
-  EOF
-                
-                aws route53 change-resource-record-sets --hosted-zone-id ${HOSTED_ZONE_ID} --change-batch file://dns-change.json
+}
+EOF
+              
+              aws route53 change-resource-record-sets --hosted-zone-id ${HOSTED_ZONE_ID} --change-batch file://dns-change.json
                 echo "DNS records created/updated for ${DOMAIN} and ${API_DOMAIN}"
               else
                 echo "DNS will be managed by ExternalDNS or needs to be configured manually."
@@ -787,171 +784,171 @@ EOF
             
             echo "Deployment completed successfully!"
   
-        # Verify deployment with timeouts and error handling
-        - name: Verify deployment
-          if: steps.cluster-check.outputs.exists == 'true'
-          run: |
-            echo "Verifying backend deployment..."
-            kubectl rollout status deployment/talk2me-backend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
-              echo "Warning: Backend deployment verification timed out"
-              echo "Current pods status:"
-              kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-backend -o wide
-              echo "Recent pod events:"
-              kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep backend || true
-            }
+      # Verification Steps
+      - name: Verify deployment
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          echo "Verifying backend deployment..."
+          kubectl rollout status deployment/talk2me-backend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Backend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-backend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep backend || true
+          }
             
-            echo "Verifying frontend deployment..."
-            kubectl rollout status deployment/talk2me-frontend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
-              echo "Warning: Frontend deployment verification timed out"
-              echo "Current pods status:"
-              kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-frontend -o wide
-              echo "Recent pod events:"
-              kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep frontend || true
-            }
+          echo "Verifying frontend deployment..."
+          kubectl rollout status deployment/talk2me-frontend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Frontend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-frontend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep frontend || true
+          }
   
-        # Get service details
-        - name: Get service information
-          if: steps.cluster-check.outputs.exists == 'true'
-          run: |
-            echo "Service information for namespace ${{ steps.vars.outputs.namespace }}:"
-            kubectl get services -n ${{ steps.vars.outputs.namespace }}
+      # Service Information
+      - name: Get service information
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          echo "Service information for namespace ${{ steps.vars.outputs.namespace }}:"
+          kubectl get services -n ${{ steps.vars.outputs.namespace }}
             
-            # Check if ingress is available
-            if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &>/dev/null; then
-              echo "Ingress information:"
-              kubectl get ingress -n ${{ steps.vars.outputs.namespace }}
-              echo "Application should be accessible via the above ingress address"
+          # Check if ingress is available
+          if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &>/dev/null; then
+            echo "Ingress information:"
+            kubectl get ingress -n ${{ steps.vars.outputs.namespace }}
+            echo "Application should be accessible via the above ingress address"
               
-              # Get ALB address
-              ALB_DNS=$(kubectl get ingress talk2me-ingress -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
-              if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "Not available yet" ]; then
-                echo "ALB DNS: ${ALB_DNS}"
-                echo "You can access the application at:"
-                echo "  Frontend: https://talk2me-gen-z.com"
-                echo "  API: https://api.talk2me-gen-z.com"
-                echo "Once DNS records have propagated"
-              fi
-            else
-              echo "No ingress found. The application may be accessible via ClusterIP or LoadBalancer services."
-            fi
-            
-            echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-            
-        # Check service endpoints
-        - name: Check service endpoints
-          if: steps.cluster-check.outputs.exists == 'true'
-          run: |
-            echo "Checking service endpoints in namespace ${{ steps.vars.outputs.namespace }}:"
-            kubectl get services -n ${{ steps.vars.outputs.namespace }} -o wide
-            
-            echo "Service endpoints:"
-            kubectl get endpoints -n ${{ steps.vars.outputs.namespace }}
-            
-            # Check if backend service has endpoints
-            BACKEND_ENDPOINTS=$(kubectl get endpoints talk2me-backend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.subsets[*].addresses}')
-            if [ -n "$BACKEND_ENDPOINTS" ]; then
-              echo "Service talk2me-backend has endpoints"
-            else
-              echo "::warning::Service talk2me-backend has no endpoints!"
-            fi
-            
-            # Check if frontend service has endpoints
-            FRONTEND_ENDPOINTS=$(kubectl get endpoints talk2me-frontend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.subsets[*].addresses}')
-            if [ -n "$FRONTEND_ENDPOINTS" ]; then
-              echo "Service talk2me-frontend has endpoints"
-            else
-              echo "::warning::Service talk2me-frontend has no endpoints!"
-            fi
-            
-        # Save deployment results
-        - name: Save deployment results
-          if: steps.cluster-check.outputs.exists == 'true'
-          run: |
             # Get ALB address
             ALB_DNS=$(kubectl get ingress talk2me-ingress -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
+            if [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "Not available yet" ]; then
+              echo "ALB DNS: ${ALB_DNS}"
+              echo "You can access the application at:"
+              echo "  Frontend: https://talk2me-gen-z.com"
+              echo "  API: https://api.talk2me-gen-z.com"
+              echo "Once DNS records have propagated"
+            fi
+          else
+            echo "No ingress found. The application may be accessible via ClusterIP or LoadBalancer services."
+          fi
             
-            # Create deployment summary
-            cat << EOF > deployment-summary.md
-            # Deployment Summary
+          echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
             
-            ## Details
-            - Namespace: ${{ steps.vars.outputs.namespace }}
-            - Image Tag: ${{ steps.vars.outputs.image_tag }}
-            - Deployed At: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-            - Domain: talk2me-gen-z.com
-            - API Domain: api.talk2me-gen-z.com
+      # Endpoint Checks
+      - name: Check service endpoints
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          echo "Checking service endpoints in namespace ${{ steps.vars.outputs.namespace }}:"
+          kubectl get services -n ${{ steps.vars.outputs.namespace }} -o wide
             
-            ## Load Balancer
-            - ALB DNS: ${ALB_DNS}
+          echo "Service endpoints:"
+          kubectl get endpoints -n ${{ steps.vars.outputs.namespace }}
             
-            ## Resources
-            \`\`\`
-            $(kubectl get pods,svc,ingress -n ${{ steps.vars.outputs.namespace }})
-            \`\`\`
+          # Check if backend service has endpoints
+          BACKEND_ENDPOINTS=$(kubectl get endpoints talk2me-backend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.subsets[*].addresses}')
+          if [ -n "$BACKEND_ENDPOINTS" ]; then
+            echo "Service talk2me-backend has endpoints"
+          else
+            echo "::warning::Service talk2me-backend has no endpoints!"
+          fi
             
-            ## Access Information
-            - Frontend URL: https://talk2me-gen-z.com
-            - API URL: https://api.talk2me-gen-z.com
-            - Direct ALB URL: http://${ALB_DNS}
+          # Check if frontend service has endpoints
+          FRONTEND_ENDPOINTS=$(kubectl get endpoints talk2me-frontend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.subsets[*].addresses}')
+          if [ -n "$FRONTEND_ENDPOINTS" ]; then
+            echo "Service talk2me-frontend has endpoints"
+          else
+            echo "::warning::Service talk2me-frontend has no endpoints!"
+          fi
             
-            ## Deployment Status
-            - Backend: $(kubectl get deployment talk2me-backend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
-            - Frontend: $(kubectl get deployment talk2me-frontend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+      # Results and Artifacts
+      - name: Save deployment results
+        if: steps.cluster-check.outputs.exists == 'true'
+        run: |
+          # Get ALB address
+          ALB_DNS=$(kubectl get ingress talk2me-ingress -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
             
-            ## Service Endpoints
-            \`\`\`
-            $(kubectl get endpoints -n ${{ steps.vars.outputs.namespace }})
-            \`\`\`
-            EOF
+          # Create deployment summary
+          cat << EOF > deployment-summary.md
+          # Deployment Summary
+            
+          ## Details
+          - Namespace: ${{ steps.vars.outputs.namespace }}
+          - Image Tag: ${{ steps.vars.outputs.image_tag }}
+          - Deployed At: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          - Domain: talk2me-gen-z.com
+          - API Domain: api.talk2me-gen-z.com
+            
+          ## Load Balancer
+          - ALB DNS: ${ALB_DNS}
+            
+          ## Resources
+          \`\`\`
+          $(kubectl get pods,svc,ingress -n ${{ steps.vars.outputs.namespace }})
+          \`\`\`
+            
+          ## Access Information
+          - Frontend URL: https://talk2me-gen-z.com
+          - API URL: https://api.talk2me-gen-z.com
+          - Direct ALB URL: http://${ALB_DNS}
+            
+          ## Deployment Status
+          - Backend: $(kubectl get deployment talk2me-backend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+          - Frontend: $(kubectl get deployment talk2me-frontend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+            
+          ## Service Endpoints
+          \`\`\`
+          $(kubectl get endpoints -n ${{ steps.vars.outputs.namespace }})
+          \`\`\`
+          EOF
   
-        - name: Upload deployment results
-          if: steps.cluster-check.outputs.exists == 'true'
-          uses: actions/upload-artifact@v4
-          with:
-            name: deployment-results
-            path: deployment-summary.md
-            retention-days: 7
+      - name: Upload deployment results
+        if: steps.cluster-check.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-results
+          path: deployment-summary.md
+          retention-days: 7
             
-        # Create summary for failed cluster
-        - name: Create failure summary
-          if: steps.cluster-check.outputs.exists != 'true'
-          run: |
-            echo "## Deployment Failed" >> $GITHUB_STEP_SUMMARY
-            echo "The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Troubleshooting Steps" >> $GITHUB_STEP_SUMMARY
-            echo "1. Verify the cluster name is correct" >> $GITHUB_STEP_SUMMARY
-            echo "2. Check that the cluster exists in the specified AWS region" >> $GITHUB_STEP_SUMMARY
-            echo "3. Ensure the GitHub Actions role has permission to access EKS" >> $GITHUB_STEP_SUMMARY
-            echo "4. Try running the workflow again with the correct cluster name and region" >> $GITHUB_STEP_SUMMARY
+      # Failure Handling
+      - name: Create failure summary
+        if: steps.cluster-check.outputs.exists != 'true'
+        run: |
+          echo "## Deployment Failed" >> $GITHUB_STEP_SUMMARY
+          echo "The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Troubleshooting Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Verify the cluster name is correct" >> $GITHUB_STEP_SUMMARY
+          echo "2. Check that the cluster exists in the specified AWS region" >> $GITHUB_STEP_SUMMARY
+          echo "3. Ensure the GitHub Actions role has permission to access EKS" >> $GITHUB_STEP_SUMMARY
+          echo "4. Try running the workflow again with the correct cluster name and region" >> $GITHUB_STEP_SUMMARY
             
-            # Create a failure artifact as well
-            cat << EOF > deployment-failure.md
-            # Deployment Failed
+          # Create a failure artifact as well
+          cat << EOF > deployment-failure.md
+          # Deployment Failed
             
-            The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**.
+          The EKS cluster **${{ steps.vars.outputs.eks_cluster_name }}** was not found in region **${{ steps.vars.outputs.aws_region }}**.
             
-            ## AWS Identity Used
-            \`\`\`
-            $(aws sts get-caller-identity)
-            \`\`\`
+          ## AWS Identity Used
+          \`\`\`
+          $(aws sts get-caller-identity)
+          \`\`\`
             
-            ## Available EKS Clusters
-            \`\`\`
-            $(aws eks list-clusters --region ${{ steps.vars.outputs.aws_region }} 2>&1 || echo "Failed to list clusters")
-            \`\`\`
+          ## Available EKS Clusters
+          \`\`\`
+          $(aws eks list-clusters --region ${{ steps.vars.outputs.aws_region }} 2>&1 || echo "Failed to list clusters")
+          \`\`\`
             
-            ## Troubleshooting Steps
-            1. Verify the cluster name is correct
-            2. Check that the cluster exists in the specified AWS region
-            3. Ensure the GitHub Actions role has permission to access EKS
-            4. Try running the workflow again with the correct cluster name and region
-            EOF
+          ## Troubleshooting Steps
+          1. Verify the cluster name is correct
+          2. Check that the cluster exists in the specified AWS region
+          3. Ensure the GitHub Actions role has permission to access EKS
+          4. Try running the workflow again with the correct cluster name and region
+          EOF
             
-        - name: Upload failure results
-          if: steps.cluster-check.outputs.exists != 'true'
-          uses: actions/upload-artifact@v4
-          with:
-            name: deployment-failure
-            path: deployment-failure.md
-            retention-days: 7
+      - name: Upload failure results
+        if: steps.cluster-check.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-failure
+          path: deployment-failure.md
+          retention-days: 7
