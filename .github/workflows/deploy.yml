@@ -128,7 +128,7 @@ jobs:
           - groups:
             - system:masters
             rolearn: ${ROLE_ARN}
-            username: github-actions
+            username: github-actions-talk2me-role
           EOF
           
           # Use eksctl to update the aws-auth ConfigMap
@@ -137,7 +137,7 @@ jobs:
             --cluster ${{ secrets.EKS_CLUSTER_NAME }} \
             --region ${{ secrets.AWS_REGION }} \
             --arn ${ROLE_ARN} \
-            --username github-actions \
+            --username github-actions-talk2me-role \
             --group system:masters
           
           # Verify the update
