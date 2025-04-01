@@ -126,6 +126,18 @@ jobs:
           echo "$(date -u +'%Y-%m-%d %H:%M:%S UTC')" > build_time.txt
           # Save repository details
           echo "${{ steps.login-ecr.outputs.registry }}" > registry.txt
+          
+          # Set status variables
+          BACKEND_STATUS="Failed"
+          if [ "${{ steps.build-backend.outcome }}" == "success" ]; then
+            BACKEND_STATUS="Success"
+          fi
+          
+          FRONTEND_STATUS="Failed"
+          if [ "${{ steps.build-frontend.outcome }}" == "success" ]; then
+            FRONTEND_STATUS="Success"
+          fi
+          
           # Save a summary for the artifact viewer
           cat << EOF > build_info.md
           # Build Summary
@@ -140,8 +152,8 @@ jobs:
           - Frontend: \`${{ steps.login-ecr.outputs.registry }}/talk2me-frontend:${{ steps.vars.outputs.image_tag }}\`
           
           ## Build Status
-          - Backend: ${{ steps.build-backend.outcome == 'success' ? '✅ Success' : '❌ Failed' }}
-          - Frontend: ${{ steps.build-frontend.outcome == 'success' ? '✅ Success' : '❌ Failed' }}
+          - Backend: ${BACKEND_STATUS}
+          - Frontend: ${FRONTEND_STATUS}
           EOF
 
       - name: Upload deployment artifacts
