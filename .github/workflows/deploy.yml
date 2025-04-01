@@ -1,5 +1,5 @@
 # .github/workflows/deploy.yml
-name: Deploy to EKS
+name: 2. Deploy to K8s
 
 on:
   workflow_run:
