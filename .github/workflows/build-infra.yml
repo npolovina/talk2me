@@ -70,31 +70,42 @@ jobs:
           eksctl version
           helm version
 
-          - name: Create EKS cluster
-          if: ${{ github.event.inputs.skip_cluster_creation != 'true' }}
-          id: create-eks-cluster
-          run: |
+      - name: Create EKS cluster
+        if: ${{ github.event.inputs.skip_cluster_creation != 'true' }}
+        id: create-eks-cluster
+        run: |
             CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
             REGION="${{ github.event.inputs.region || 'us-east-1' }}"
-            
+    
+            # Check if cluster already exists
+            EXISTING_CLUSTER=$(aws eks list-clusters --region "$REGION" --query "clusters[?@=='$CLUSTER_NAME']" --output text)
+    
+            if [ -n "$EXISTING_CLUSTER" ]; then
+                echo "Cluster $CLUSTER_NAME already exists in region $REGION"
+                echo "Skipping cluster creation..."
+                echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+                echo "region=$REGION" >> $GITHUB_OUTPUT
+                exit 0
+            fi
+    
             echo "Creating EKS cluster: $CLUSTER_NAME in region $REGION"
-            
+    
             # Verify AWS credentials and permissions
             aws sts get-caller-identity
             
             # Additional debug information
             aws eks list-cluster-versions --region "$REGION" || echo "Unable to list cluster versions"
-            
+    
             eksctl create cluster \
-              --name "$CLUSTER_NAME" \
-              --region "$REGION" \
-              --node-type "t3.medium" \
-              --nodes-min 2 \
-              --nodes-max 4 \
-              --nodes 2 \
-              --with-oidc \
-              --managed \
-              --alb-ingress-access
+            --name "$CLUSTER_NAME" \
+            --region "$REGION" \
+            --node-type "t3.medium" \
+            --nodes-min 2 \
+            --nodes-max 4 \
+            --nodes 2 \
+            --with-oidc \
+            --managed \
+            --alb-ingress-access
             
             echo "EKS cluster created successfully!"
             
