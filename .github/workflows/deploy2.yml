@@ -230,194 +230,232 @@ jobs:
       - name: Deploy to EKS
         if: steps.cluster-check.outputs.exists == 'true'
         run: |
-            echo "Deploying Kubernetes manifests..."
-            # Set variables for templating
-            export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
-            export AWS_REGION="${{ steps.vars.outputs.aws_region }}"
-            export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
-            export NAMESPACE="${{ steps.vars.outputs.namespace }}"
-            export REGISTRY="${{ steps.vars.outputs.registry || format('{0}.dkr.ecr.{1}.amazonaws.com', steps.aws-account.outputs.account_id, steps.vars.outputs.aws_region) }}"
-            
-            # Create deployments directory if it doesn't exist
-            mkdir -p deployments
-            
-            # Generate backend deployment
-            cat << EOF > deployments/backend-deployment.yaml
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
+          echo "Deploying Kubernetes manifests..."
+          # Set variables for templating
+          export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
+          export AWS_REGION="${{ steps.vars.outputs.aws_region }}"
+          export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
+          export NAMESPACE="${{ steps.vars.outputs.namespace }}"
+          export REGISTRY="${{ steps.vars.outputs.registry || format('{0}.dkr.ecr.{1}.amazonaws.com', steps.aws-account.outputs.account_id, steps.vars.outputs.aws_region) }}"
+          
+          # Create deployments directory if it doesn't exist
+          mkdir -p deployments
+          
+          # Generate backend deployment with correct indentation
+          cat << EOF > deployments/backend-deployment.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
             name: talk2me-backend
             namespace: ${NAMESPACE}
-            spec:
+          spec:
             replicas: 2
             selector:
-                matchLabels:
+              matchLabels:
                 app: talk2me-backend
             template:
-                metadata:
+              metadata:
                 labels:
-                    app: talk2me-backend
-                spec:
+                  app: talk2me-backend
+              spec:
                 containers:
                 - name: backend
-                    image: ${REGISTRY}/talk2me-backend:${IMAGE_TAG}
-                    ports:
-                    - containerPort: 8000
-                    env:
-                    - name: DEEPSEEK_API_KEY
+                  image: ${REGISTRY}/talk2me-backend:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: DEEPSEEK_API_KEY
                     valueFrom:
-                        secretKeyRef:
+                      secretKeyRef:
                         name: talk2me-secrets
                         key: deepseek-api-key
-                    resources:
+                  resources:
                     limits:
-                        cpu: "500m"
-                        memory: "512Mi"
+                      cpu: "500m"
+                      memory: "512Mi"
                     requests:
-                        cpu: "250m"
-                        memory: "256Mi"
-            ---
-            apiVersion: v1
-            kind: Service
-            metadata:
+                      cpu: "250m"
+                      memory: "256Mi"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
             name: talk2me-backend
             namespace: ${NAMESPACE}
-            spec:
+          spec:
             selector:
-                app: talk2me-backend
+              app: talk2me-backend
             ports:
             - port: 80
-                targetPort: 8000
+              targetPort: 8000
             type: ClusterIP
-            EOF
-            
-            # Generate frontend deployment
-            cat << EOF > deployments/frontend-deployment.yaml
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
+          EOF
+          
+          # Generate frontend deployment with correct indentation
+          cat << EOF > deployments/frontend-deployment.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
             name: talk2me-frontend
             namespace: ${NAMESPACE}
-            spec:
+          spec:
             replicas: 2
             selector:
-                matchLabels:
+              matchLabels:
                 app: talk2me-frontend
             template:
-                metadata:
+              metadata:
                 labels:
-                    app: talk2me-frontend
-                spec:
+                  app: talk2me-frontend
+              spec:
                 containers:
                 - name: frontend
-                    image: ${REGISTRY}/talk2me-frontend:${IMAGE_TAG}
-                    ports:
-                    - containerPort: 80
-                    resources:
+                  image: ${REGISTRY}/talk2me-frontend:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 80
+                  resources:
                     limits:
-                        cpu: "300m"
-                        memory: "256Mi"
+                      cpu: "300m"
+                      memory: "256Mi"
                     requests:
-                        cpu: "100m"
-                        memory: "128Mi"
-            ---
-            apiVersion: v1
-            kind: Service
-            metadata:
+                      cpu: "100m"
+                      memory: "128Mi"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
             name: talk2me-frontend
             namespace: ${NAMESPACE}
-            spec:
+          spec:
             selector:
-                app: talk2me-frontend
+              app: talk2me-frontend
             ports:
             - port: 80
-                targetPort: 80
+              targetPort: 80
             type: ClusterIP
-            EOF
+          EOF
+          
+          # Try to find certificate for domain in ACM
+          echo "Looking for SSL certificate for talk2me-gen-z.com in ACM..."
+          CERT_ARN=""
+          
+          if [ -n "${{ secrets.CERTIFICATE_ARN }}" ]; then
+            # Use provided certificate ARN if available
+            CERT_ARN="${{ secrets.CERTIFICATE_ARN }}"
+            echo "Using certificate ARN from secrets: ${CERT_ARN}"
+          else
+            # Try to find certificate for domain in ACM
+            echo "Looking for wildcard or matching certificate in ACM..."
+            # Try wildcard first
+            CERT_ARN=$(aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[?contains(DomainName, '*.talk2me-gen-z.com')].CertificateArn" --output text)
             
-            # Check if CERTIFICATE_ARN is set
-            if [ -z "${{ secrets.CERTIFICATE_ARN }}" ]; then
-            echo "::warning::CERTIFICATE_ARN secret is not set, using a simplified ingress configuration"
-            # Generate simplified ingress
+            # If no wildcard cert, try exact domain
+            if [ -z "$CERT_ARN" ]; then
+              CERT_ARN=$(aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[?DomainName=='talk2me-gen-z.com'].CertificateArn" --output text)
+            fi
+            
+            # If still no cert, try listing all certs for debugging
+            if [ -z "$CERT_ARN" ]; then
+              echo "No matching certificate found. Available certificates:"
+              aws acm list-certificates --region ${AWS_REGION} --query "CertificateSummaryList[].{ARN:CertificateArn,Domain:DomainName}" --output table
+            else
+              echo "Found certificate: ${CERT_ARN}"
+            fi
+          fi
+          
+          # Generate ingress configuration based on certificate availability
+          if [ -z "$CERT_ARN" ]; then
+            echo "::warning::No certificate found for talk2me-gen-z.com, using simplified ingress configuration"
+            # Generate simplified ingress with correct indentation
             cat << EOF > deployments/ingress.yaml
-            apiVersion: networking.k8s.io/v1
-            kind: Ingress
-            metadata:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
             name: talk2me-ingress
             namespace: ${NAMESPACE}
             annotations:
-                kubernetes.io/ingress.class: "alb"
-                alb.ingress.kubernetes.io/scheme: internet-facing
-                alb.ingress.kubernetes.io/target-type: ip
-            spec:
+              kubernetes.io/ingress.class: "alb"
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+          spec:
             rules:
             - http:
                 paths:
                 - path: /api
-                    pathType: Prefix
-                    backend:
+                  pathType: Prefix
+                  backend:
                     service:
-                        name: talk2me-backend
-                        port:
+                      name: talk2me-backend
+                      port:
                         number: 80
                 - path: /
-                    pathType: Prefix
-                    backend:
+                  pathType: Prefix
+                  backend:
                     service:
-                        name: talk2me-frontend
-                        port:
+                      name: talk2me-frontend
+                      port:
                         number: 80
-            EOF
-            else
-            # Generate ingress configuration with TLS
+          EOF
+          else
+            # Generate ingress configuration with TLS and correct indentation
             cat << EOF > deployments/ingress.yaml
-            apiVersion: networking.k8s.io/v1
-            kind: Ingress
-            metadata:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
             name: talk2me-ingress
             namespace: ${NAMESPACE}
             annotations:
-                kubernetes.io/ingress.class: "alb"
-                alb.ingress.kubernetes.io/scheme: internet-facing
-                alb.ingress.kubernetes.io/target-type: ip
-                alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-                alb.ingress.kubernetes.io/ssl-redirect: '443'
-                alb.ingress.kubernetes.io/certificate-arn: "${{ secrets.CERTIFICATE_ARN }}"
-                alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
-                external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
-            spec:
+              kubernetes.io/ingress.class: "alb"
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/certificate-arn: "${CERT_ARN}"
+              alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+              external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
+          spec:
             rules:
             - host: talk2me-gen-z.com
-                http:
+              http:
                 paths:
                 - path: /
-                    pathType: Prefix
-                    backend:
+                  pathType: Prefix
+                  backend:
                     service:
-                        name: talk2me-frontend
-                        port:
+                      name: talk2me-frontend
+                      port:
                         number: 80
             - host: api.talk2me-gen-z.com
-                http:
+              http:
                 paths:
                 - path: /
-                    pathType: Prefix
-                    backend:
+                  pathType: Prefix
+                  backend:
                     service:
-                        name: talk2me-backend
-                        port:
+                      name: talk2me-backend
+                      port:
                         number: 80
-            EOF
-            fi
-            
-            # Apply all deployment manifests
-            kubectl apply -f deployments/backend-deployment.yaml
-            kubectl apply -f deployments/frontend-deployment.yaml
-            kubectl apply -f deployments/ingress.yaml
-            
-            # List all applied resources
-            echo "Deployed resources in namespace ${{ steps.vars.outputs.namespace }}:"
-            kubectl get all -n ${{ steps.vars.outputs.namespace }}
+          EOF
+          fi
+          
+          # Debug: Print the generated YAML files
+          echo "Generated backend deployment YAML:"
+          cat deployments/backend-deployment.yaml
+          
+          echo "Generated frontend deployment YAML:"
+          cat deployments/frontend-deployment.yaml
+          
+          echo "Generated ingress YAML:"
+          cat deployments/ingress.yaml
+          
+          # Apply all deployment manifests
+          kubectl apply -f deployments/backend-deployment.yaml
+          kubectl apply -f deployments/frontend-deployment.yaml
+          kubectl apply -f deployments/ingress.yaml
+          
+          # List all applied resources
+          echo "Deployed resources in namespace ${NAMESPACE}:"
+          kubectl get all -n ${NAMESPACE}
 
       # Verify deployment with timeouts and error handling
       - name: Verify deployment
