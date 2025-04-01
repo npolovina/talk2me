@@ -1,29 +1,29 @@
 # .github/workflows/deploy.yml
-name: 3. Deploy to K8s
+# name: 3. Deploy to K8s
 
-on:
-  workflow_run:
-    workflows: ["2. Build and Push Images"]
-    types:
-      - completed
-    branches: [main]
-  # Allow manual deployments
-  workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Image tag to deploy (defaults to latest build)'
-        required: false
-        default: ''
-      namespace:
-        description: 'Kubernetes namespace to deploy to'
-        required: false
-        default: 'talk2me'
-      run_verification:
-        description: 'Run verification workflow after deployment'
-        required: false
-        default: 'true'
-        type: boolean
-      aws_region:
+# on:
+#   workflow_run:
+#     workflows: ["2. Build and Push Images"]
+#     types:
+#       - completed
+#     branches: [main]
+#   # Allow manual deployments
+#   workflow_dispatch:
+#     inputs:
+#       image_tag:
+#         description: 'Image tag to deploy (defaults to latest build)'
+#         required: false
+#         default: ''
+#       namespace:
+#         description: 'Kubernetes namespace to deploy to'
+#         required: false
+#         default: 'talk2me'
+#       run_verification:
+#         description: 'Run verification workflow after deployment'
+#         required: false
+#         default: 'true'
+#         type: boolean
+#       aws_region:
         description: 'AWS Region (override)'
         required: false
         default: ''
