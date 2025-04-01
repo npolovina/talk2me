@@ -248,8 +248,15 @@ jobs:
             eksctl create iamidentitymapping \
                 --cluster "${CLUSTER_NAME}" \
                 --region "${REGION}" \
-                --arn "${ROLE_ARN}" \
-                --username "${ROLE_NAME}" \
+                --arn "${{ secrets.AWS_ROLE_ARN }}" \
+                --username "${{ secrets.ROLE_NAME }}" \
+                --group "system:masters"
+
+            eksctl create iamidentitymapping \
+                --cluster "${CLUSTER_NAME}" \
+                --region "${REGION}" \
+                --arn "${{ secrets.AWS_GITHUB_ACTIONS_USER_ARN}}" \
+                --username "${{ secrets.AWS_ACCESS_KEY_ID }}" \
                 --group "system:masters"
 
                         
