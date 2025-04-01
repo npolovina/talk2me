@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeCluster",
+        "eks:ListClusters",
+        "eks:DescribeNodegroup",
+        "eks:ListNodegroups",
+        "eks:ListUpdates",
+        "eks:AccessKubernetesApi",
+        "eks:ListFargateProfiles",
+        "eks:DescribeFargateProfile",
+        "eks:ListAddons",
+        "eks:DescribeAddon",
+        "eks:ListIdentityProviderConfigs",
+        "eks:DescribeIdentityProviderConfig",
+        "eks:ListTagsForResource",
+        "eks:DescribeUpdate"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

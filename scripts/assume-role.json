@@ -1,0 +1,13 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "AWS": "arn:aws:iam::637423575947:user/GitHub-Actions-User"
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  }
+  

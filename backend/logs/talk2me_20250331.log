@@ -418,3 +418,95 @@
 2025-03-31 15:46:38,103 - talk2me - INFO - Response length: 214 characters
 2025-03-31 15:46:38,105 - talk2me - INFO - Successfully generated AI response
 2025-03-31 15:46:38,110 - talk2me - INFO - Request 1743450391.5999756 completed with status code 200
+2025-04-01 11:20:08,891 - talk2me - INFO - Request 1743520808.883192 started: OPTIONS /api/chat
+2025-04-01 11:20:08,913 - talk2me - INFO - Request origin: https://talk2me-gen-z.com
+2025-04-01 11:20:08,929 - talk2me - INFO - Request 1743520808.883192 completed with status code 200
+2025-04-01 11:20:09,024 - talk2me - INFO - Request 1743520809.0243058 started: POST /api/chat
+2025-04-01 11:20:09,024 - talk2me - INFO - Request origin: https://talk2me-gen-z.com
+2025-04-01 11:20:09,090 - talk2me - INFO - Chat request received, message length: 5
+2025-04-01 11:20:09,147 - talk2me - INFO - Detected language: no
+2025-04-01 11:20:09,148 - talk2me - INFO - Detected categories: []
+2025-04-01 11:20:09,149 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-04-01 11:20:09,150 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-04-01 11:20:16,641 - talk2me - INFO - DeepSeek API response status: 200
+2025-04-01 11:20:16,642 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Tue, 01 Apr 2025 15:20:09 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': 'ae85178e008ea26e8a8ed67d053df802', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=QLYN60HHJGZtiGUtfZR5GBn7AVGyzc0Q6RoM_9AbvI4-1743520809-1.0.1.1-NXS3eQhwUJUHHossqK31i2ksUk175rasfz6slofNG0W0vz2ly7Ap3bky4BW4fhOEtsf648XKqZX52yuoTAzKD2R07J_q5vhkXOps4PY1ypE; path=/; expires=Tue, 01-Apr-25 15:50:09 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '9299119eff8e43ec-EWR', 'Content-Encoding': 'gzip'}
+2025-04-01 11:20:16,642 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-04-01 11:20:16,643 - talk2me - INFO - Full response structure: {
+  "id": "8eed81aa-876d-44b6-8503-42158bc0c345",
+  "object": "chat.completion",
+  "created": 1743520808,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Heyyy! \ud83d\ude0a Did you mean \"hello\" or are we just vibing with \"gello\" today? Either way, what's up? How can I help ya? \u2728"
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 49,
+    "compl...
+2025-04-01 11:20:16,644 - talk2me - INFO - Extracted response from standard path: choices[0].message.content
+2025-04-01 11:20:16,644 - talk2me - INFO - Received valid response from DeepSeek API
+2025-04-01 11:20:16,644 - talk2me - INFO - Response length: 115 characters
+2025-04-01 11:20:16,646 - talk2me - INFO - Successfully generated AI response
+2025-04-01 11:20:16,658 - talk2me - INFO - Request 1743520809.0243058 completed with status code 200
+2025-04-01 11:20:30,148 - talk2me - INFO - Request 1743520830.1482875 started: POST /api/chat
+2025-04-01 11:20:30,148 - talk2me - INFO - Request origin: https://talk2me-gen-z.com
+2025-04-01 11:20:30,150 - talk2me - INFO - Chat request received, message length: 46
+2025-04-01 11:20:30,241 - talk2me - INFO - Detected language: en
+2025-04-01 11:20:30,241 - talk2me - INFO - Detected categories: []
+2025-04-01 11:20:30,242 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-04-01 11:20:30,242 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-04-01 11:20:38,928 - talk2me - INFO - DeepSeek API response status: 200
+2025-04-01 11:20:38,929 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Tue, 01 Apr 2025 15:20:30 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '0978a54e4caa0efa59847b290bb3dc87', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=_0ziJgI5Ssf9tWTKhjVrxpOvBRido7B4WZG4xkPl4Lk-1743520830-1.0.1.1-Hq8ebfDFeU7pMwwlFbiP8pei8JCnzpnGRnAWc4chbQavNUG6zaiSEI1DJ6i1CIF0Hmwf__YQ2pAUfxd6nCluefOxevZc3tWCj2KHKxELBJg; path=/; expires=Tue, 01-Apr-25 15:50:30 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '92991225dc274259-EWR', 'Content-Encoding': 'gzip'}
+2025-04-01 11:20:38,929 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-04-01 11:20:38,929 - talk2me - INFO - Full response structure: {
+  "id": "066967a6-fa20-4100-ac17-6a08405a3ebe",
+  "object": "chat.completion",
+  "created": 1743520830,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hey! I'm not a weather bot, but I can help with health stuff! \ud83d\ude0a Want tips on staying active in any weather or how weather affects your mood? Let me know! \ud83c\udf26\ufe0f\ud83d\udc99"
+      },
+      "logprobs": null,
+      "finish_reason": "stop"...
+2025-04-01 11:20:38,929 - talk2me - INFO - Extracted response from standard path: choices[0].message.content
+2025-04-01 11:20:38,929 - talk2me - INFO - Received valid response from DeepSeek API
+2025-04-01 11:20:38,930 - talk2me - INFO - Response length: 157 characters
+2025-04-01 11:20:38,933 - talk2me - INFO - Successfully generated AI response
+2025-04-01 11:20:38,936 - talk2me - INFO - Request 1743520830.1482875 completed with status code 200
+2025-04-01 11:21:01,364 - talk2me - INFO - Request 1743520861.364006 started: POST /api/chat
+2025-04-01 11:21:01,364 - talk2me - INFO - Request origin: https://talk2me-gen-z.com
+2025-04-01 11:21:01,365 - talk2me - INFO - Chat request received, message length: 38
+2025-04-01 11:21:01,414 - talk2me - INFO - Detected language: fr
+2025-04-01 11:21:01,414 - talk2me - INFO - Detected categories: ['sexual_health']
+2025-04-01 11:21:01,414 - talk2me - INFO - Using DeepSeek API. API Key status: Set (length: 35)
+2025-04-01 11:21:01,414 - talk2me - INFO - Sending request to DeepSeek API: https://api.deepseek.com/v1/chat/completions
+2025-04-01 11:21:17,691 - talk2me - INFO - DeepSeek API response status: 200
+2025-04-01 11:21:17,691 - talk2me - INFO - DeepSeek API response headers: {'Date': 'Tue, 01 Apr 2025 15:21:01 GMT', 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked', 'Connection': 'keep-alive', 'vary': 'origin, access-control-request-method, access-control-request-headers', 'access-control-allow-credentials': 'true', 'x-ds-trace-id': '2a95a0a599ed2a45eebad8fcbed224d7', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload', 'X-Content-Type-Options': 'nosniff', 'cf-cache-status': 'DYNAMIC', 'Set-Cookie': '__cf_bm=bAngW1UEiD1couIu1IjqTO9NUHVaXGKqeR5zAOEFc9Q-1743520861-1.0.1.1-cTtjgtPTzGLZd2O631uKQ84vYhQlPBvCrQpXPcJf4ZZZz9XQ.T36boUj6Rp22UQ.D7LNpMWfXd4V1KrbfWmMLDD_h4DzOpog2la8booS9.0; path=/; expires=Tue, 01-Apr-25 15:51:01 GMT; domain=.deepseek.com; HttpOnly; Secure; SameSite=None', 'Server': 'cloudflare', 'CF-RAY': '929912e6f86633d5-EWR', 'Content-Encoding': 'gzip'}
+2025-04-01 11:21:17,691 - talk2me - INFO - DeepSeek API response data structure: ['id', 'object', 'created', 'model', 'choices', 'usage', 'system_fingerprint']
+2025-04-01 11:21:17,692 - talk2me - INFO - Full response structure: {
+  "id": "379bd7a6-29fb-4823-a939-346280e9425b",
+  "object": "chat.completion",
+  "created": 1743520861,
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Absolutely! Here are some reliable resources about abortion, including info on options, safety, and support:  \n\n- **Planned Parenthood**: [www.plannedparenthood.org](https://www.plannedparenthood.org) \u2013 Offers factual info, clinic locators, and financi...
+2025-04-01 11:21:17,692 - talk2me - INFO - Extracted response from standard path: choices[0].message.content
+2025-04-01 11:21:17,692 - talk2me - INFO - Received valid response from DeepSeek API
+2025-04-01 11:21:17,692 - talk2me - INFO - Response length: 798 characters
+2025-04-01 11:21:17,693 - talk2me - INFO - Successfully generated AI response
+2025-04-01 11:21:17,695 - talk2me - INFO - Request 1743520861.364006 completed with status code 200

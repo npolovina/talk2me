@@ -3,7 +3,7 @@ name: 2. Deploy to K8s
 
 on:
   workflow_run:
-    workflows: ["Build and Push Images"]
+    workflows: ["1. Build and Push Images"]
     types:
       - completed
     branches: [main]
@@ -14,13 +14,17 @@ on:
         description: 'Image tag to deploy (defaults to latest build)'
         required: false
         default: ''
+      namespace:
+        description: 'Kubernetes namespace to deploy to'
+        required: false
+        default: 'talk2me'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     permissions:
-      id-token: write
+      id-token: write  # Required for OIDC auth
       contents: read
     
     steps:
@@ -29,12 +33,12 @@ jobs:
 
       # Download artifacts from the triggering workflow (only for workflow_run trigger)
       - name: Download artifacts from workflow
-        if: ${{ github.event_name == 'workflow_run' && github.event.inputs.image_tag == '' }}
+        if: ${{ github.event_name == 'workflow_run' }}
         uses: dawidd6/action-download-artifact@v2
         with:
           workflow: build.yml
-          name: image-tag
-          path: .
+          name: deployment-info
+          path: ./deployment-info
           workflow_conclusion: success
           
       # Configure AWS credentials
@@ -43,7 +47,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
-          output-credentials: true
+          mask-aws-account-id: false # Show account ID for better debugging
 
       # Verify AWS authentication
       - name: Verify AWS authentication
@@ -51,6 +55,11 @@ jobs:
           echo "Verifying AWS authentication:"
           aws sts get-caller-identity
           echo "AWS credentials successfully configured"
+          
+          # Also check ECR access
+          echo "Verifying ECR access:"
+          aws ecr get-authorization-token --region ${{ secrets.AWS_REGION }}
+          echo "ECR access verified"
 
       # Install kubectl
       - name: Install kubectl
@@ -75,15 +84,30 @@ jobs:
       - name: Set image tag
         id: vars
         run: |
+          # Set namespace
+          if [ -n "${{ github.event.inputs.namespace }}" ]; then
+            NAMESPACE="${{ github.event.inputs.namespace }}"
+          else
+            NAMESPACE="talk2me"
+          fi
+          echo "namespace=${NAMESPACE}" >> $GITHUB_OUTPUT
+          
+          # Set image tag
           if [ -n "${{ github.event.inputs.image_tag }}" ]; then
             echo "image_tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
-          elif [ -f "image_tag.txt" ]; then
-            IMAGE_TAG=$(cat image_tag.txt)
+            echo "Using manually specified image tag: ${{ github.event.inputs.image_tag }}"
+          elif [ -f "./deployment-info/image_tag.txt" ]; then
+            IMAGE_TAG=$(cat ./deployment-info/image_tag.txt)
             echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+            echo "Using image tag from build workflow: ${IMAGE_TAG}"
+            if [ -f "./deployment-info/build_time.txt" ]; then
+              BUILD_TIME=$(cat ./deployment-info/build_time.txt)
+              echo "Image was built at: ${BUILD_TIME}"
+            fi
           else
             # Fallback to 'latest' if no tag is available
             echo "image_tag=latest" >> $GITHUB_OUTPUT
-            echo "Warning: No image tag found, using 'latest' instead" >> $GITHUB_STEP_SUMMARY
+            echo "Warning: No image tag found, using 'latest' instead"
           fi
 
       # Update kubeconfig to connect to EKS cluster
@@ -93,60 +117,30 @@ jobs:
             echo "Error: EKS_CLUSTER_NAME secret is not set"
             exit 1
           fi
-  
-          # Get identity info for debugging
+          
+          # Get current role identity for debugging
           echo "Current AWS identity:"
           aws sts get-caller-identity
-          ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text)
-          echo "Role ARN: ${ROLE_ARN}"
-        
+          
+          # Describe EKS cluster to verify access
+          echo "Verifying access to EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}:"
+          aws eks describe-cluster --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }} --query "cluster.name"
+          
           # Update kubeconfig
+          echo "Updating kubeconfig for EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}..."
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
             --name ${{ secrets.EKS_CLUSTER_NAME }}
-        
-          # Print kubeconfig for debugging
-          echo "Generated kubeconfig:"
-          kubectl config view --minify
           
-          # Print AWS info for debugging
-          echo "AWS credentials:"
-          aws configure list
+          # Test access to the cluster
+          echo "Testing access to Kubernetes cluster:"
+          kubectl cluster-info
+          kubectl get nodes
 
-      # Update aws-auth ConfigMap to grant permissions to the GitHub Actions role
-      - name: Update aws-auth ConfigMap for GitHub Actions role
+      # Create namespace if it doesn't exist
+      - name: Ensure namespace exists
         run: |
-          echo "Updating aws-auth ConfigMap to grant permissions to the GitHub Actions role..."
-          
-          # Get GitHub Actions role ARN
-          ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text | cut -d'/' -f1)
-          ROLE_NAME=$(aws sts get-caller-identity --query Arn --output text | cut -d'/' -f2)
-          echo "GitHub Actions Role ARN: ${ROLE_ARN}"
-          echo "GitHub Actions Role Name: ${ROLE_NAME}"
-          
-          # Create a temporary patch file for eksctl
-          cat << EOF > aws-auth-patch.yaml
-          - groups:
-            - system:masters
-            rolearn: ${ROLE_ARN}
-            username: github-actions-talk2me-role
-          EOF
-          
-          # Use eksctl to update the aws-auth ConfigMap
-          echo "Updating aws-auth ConfigMap using eksctl..."
-          eksctl create iamidentitymapping \
-            --cluster ${{ secrets.EKS_CLUSTER_NAME }} \
-            --region ${{ secrets.AWS_REGION }} \
-            --arn ${ROLE_ARN} \
-            --username github-actions-talk2me-role \
-            --group system:masters
-          
-          # Verify the update
-          echo "Verifying aws-auth ConfigMap..."
-          kubectl describe configmap -n kube-system aws-auth
-          
-          # Create namespace if it doesn't exist
-          echo "Creating talk2me namespace if it doesn't exist..."
-          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+          echo "Creating namespace ${{ steps.vars.outputs.namespace }} if it doesn't exist..."
+          kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
 
       # Update Kubernetes secrets
       - name: Update Kubernetes secrets
@@ -160,7 +154,7 @@ jobs:
           kind: Secret
           metadata:
             name: talk2me-secrets
-            namespace: talk2me
+            namespace: ${{ steps.vars.outputs.namespace }}
           type: Opaque
           data:
             deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
@@ -178,24 +172,66 @@ jobs:
           export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
           export AWS_REGION="${{ secrets.AWS_REGION }}"
           export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
+          export NAMESPACE="${{ steps.vars.outputs.namespace }}"
           export DEEPSEEK_API_KEY_BASE64="$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)"
           
-          # Process the manifests
+          # Process each manifest
           for manifest in k8s/*.yaml; do
-            echo "Processing $manifest..."
-            envsubst < "$manifest" > processed_manifest.yaml
-            kubectl apply -f processed_manifest.yaml
-            rm processed_manifest.yaml
+            if [ -f "$manifest" ]; then
+              echo "Processing $manifest..."
+              # Replace environment variables in manifest
+              envsubst < "$manifest" > processed_manifest.yaml
+              # Apply the manifest
+              kubectl apply -f processed_manifest.yaml
+              # Save result code to check for errors
+              RESULT=$?
+              if [ $RESULT -ne 0 ]; then
+                echo "Warning: Failed to apply $manifest with exit code $RESULT"
+                echo "Contents of processed manifest:"
+                cat processed_manifest.yaml
+              fi
+              rm processed_manifest.yaml
+            fi
           done
+          
+          # List all applied resources
+          echo "Deployed resources in namespace ${{ steps.vars.outputs.namespace }}:"
+          kubectl get all -n ${{ steps.vars.outputs.namespace }}
 
       # Verify deployment with timeouts and error handling
       - name: Verify deployment
         run: |
           echo "Verifying backend deployment..."
-          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=120s || echo "Backend deployment verification timed out, but continuing..."
+          kubectl rollout status deployment/talk2me-backend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Backend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-backend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep backend || true
+          }
           
           echo "Verifying frontend deployment..."
-          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=120s || echo "Frontend deployment verification timed out, but continuing..."
+          kubectl rollout status deployment/talk2me-frontend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Frontend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-frontend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep frontend || true
+          }
+
+      # Get service details
+      - name: Get service information
+        run: |
+          echo "Service information for namespace ${{ steps.vars.outputs.namespace }}:"
+          kubectl get services -n ${{ steps.vars.outputs.namespace }}
           
-          echo "Listing all resources in the talk2me namespace:"
-          kubectl get all -n talk2me || echo "Failed to list resources"
+          # Check if ingress is available
+          if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &>/dev/null; then
+            echo "Ingress information:"
+            kubectl get ingress -n ${{ steps.vars.outputs.namespace }}
+            echo "Application should be accessible via the above ingress address"
+          else
+            echo "No ingress found. The application may be accessible via ClusterIP or LoadBalancer services."
+          fi
+          
+          echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
