@@ -1,0 +1,227 @@
+# .github/workflows/verify.yml
+name: 4. Verify Deployment
+
+on:
+  workflow_run:
+    workflows: ["3. Deploy to K8s"]
+    types:
+      - completed
+    branches: [main]
+  # Allow manual verification
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: 'Kubernetes namespace to verify'
+        required: false
+        default: 'talk2me'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      id-token: write  # Required for OIDC auth
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          mask-aws-account-id: false
+
+      # Install kubectl
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      # Set namespace
+      - name: Set namespace
+        id: vars
+        run: |
+          # Set namespace
+          if [ -n "${{ github.event.inputs.namespace }}" ]; then
+            NAMESPACE="${{ github.event.inputs.namespace }}"
+          else
+            NAMESPACE="talk2me"
+          fi
+          echo "namespace=${NAMESPACE}" >> $GITHUB_OUTPUT
+
+      # Update kubeconfig to connect to EKS cluster
+      - name: Update kubeconfig for EKS cluster
+        run: |
+          # Update kubeconfig
+          echo "Updating kubeconfig for EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}..."
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+          
+          # Test access to the cluster
+          echo "Testing access to Kubernetes cluster:"
+          kubectl cluster-info
+
+      # Check pod status
+      - name: Check pod status
+        run: |
+          echo "Checking pod status in namespace ${{ steps.vars.outputs.namespace }}:"
+          
+          # Check if pods are running
+          PODS_RUNNING=$(kubectl get pods -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.items[*].status.phase}' | tr ' ' '\n' | grep -c "Running" || echo "0")
+          PODS_TOTAL=$(kubectl get pods -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.items[*].status.phase}' | tr ' ' '\n' | wc -l || echo "0")
+          
+          echo "Running pods: $PODS_RUNNING/$PODS_TOTAL"
+          
+          # Output detailed pod information
+          echo "Detailed pod information:"
+          kubectl get pods -n ${{ steps.vars.outputs.namespace }} -o wide
+          
+          # Check for pods not in Running state
+          if [ "$PODS_RUNNING" -lt "$PODS_TOTAL" ]; then
+            echo "Warning: Not all pods are running"
+            
+            # Get details of non-running pods
+            NON_RUNNING_PODS=$(kubectl get pods -n ${{ steps.vars.outputs.namespace }} --field-selector status.phase!=Running -o jsonpath='{.items[*].metadata.name}')
+            
+            for pod in $NON_RUNNING_PODS; do
+              echo "Details for non-running pod: $pod"
+              kubectl describe pod $pod -n ${{ steps.vars.outputs.namespace }}
+              echo "Logs for non-running pod: $pod"
+              kubectl logs $pod -n ${{ steps.vars.outputs.namespace }} --tail=50 || echo "No logs available"
+            done
+          fi
+
+      # Check ingress status
+      - name: Check ingress status
+        run: |
+          echo "Checking ingress status in namespace ${{ steps.vars.outputs.namespace }}:"
+          
+          if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &> /dev/null; then
+            echo "Ingress details:"
+            kubectl get ingress -n ${{ steps.vars.outputs.namespace }} -o wide
+            
+            # Get ingress hostname or address
+            INGRESS_HOST=$(kubectl get ingress -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}')
+            
+            if [ -n "$INGRESS_HOST" ]; then
+              echo "Ingress hostname: $INGRESS_HOST"
+              echo "The application should be accessible at: https://$INGRESS_HOST"
+              
+              # Check DNS resolution
+              echo "Checking DNS resolution for $INGRESS_HOST:"
+              host $INGRESS_HOST || echo "DNS resolution failed"
+            else
+              echo "Warning: Ingress hostname not available yet"
+            fi
+          else
+            echo "No ingress resources found in namespace ${{ steps.vars.outputs.namespace }}"
+          fi
+
+      # Check service endpoints
+      - name: Check service endpoints
+        run: |
+          echo "Checking service endpoints in namespace ${{ steps.vars.outputs.namespace }}:"
+          
+          # Check all services
+          kubectl get services -n ${{ steps.vars.outputs.namespace }}
+          
+          # Check service endpoints
+          echo "Service endpoints:"
+          kubectl get endpoints -n ${{ steps.vars.outputs.namespace }}
+          
+          # Check if services have endpoints
+          for svc in $(kubectl get services -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.items[*].metadata.name}'); do
+            ENDPOINTS=$(kubectl get endpoints $svc -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.subsets[*].addresses}')
+            if [ -z "$ENDPOINTS" ]; then
+              echo "Warning: Service $svc has no endpoints"
+            else
+              echo "Service $svc has endpoints"
+            fi
+          done
+
+      # Perform health checks
+      - name: Perform health checks
+        run: |
+          echo "Performing health checks..."
+          
+          # Check if we can port-forward to the backend service
+          echo "Testing backend connectivity:"
+          kubectl port-forward svc/talk2me-backend 8000:80 -n ${{ steps.vars.outputs.namespace }} &
+          PF_PID=$!
+          sleep 5
+          
+          if curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null | grep -q "200"; then
+            echo "✅ Backend health check successful"
+            BACKEND_STATUS="Healthy"
+          else
+            echo "⚠️ Backend health check failed"
+            BACKEND_STATUS="Unhealthy"
+          fi
+          
+          kill $PF_PID
+          
+          # Check if we can port-forward to the frontend service
+          echo "Testing frontend connectivity:"
+          kubectl port-forward svc/talk2me-frontend 8080:80 -n ${{ steps.vars.outputs.namespace }} &
+          PF_PID=$!
+          sleep 5
+          
+          if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null | grep -q "200"; then
+            echo "✅ Frontend connectivity check successful"
+            FRONTEND_STATUS="Healthy"
+          else
+            echo "⚠️ Frontend connectivity check failed"
+            FRONTEND_STATUS="Unhealthy"
+          fi
+          
+          kill $PF_PID
+
+      # Create verification summary
+      - name: Create verification summary
+        run: |
+          # Create verification summary
+          cat << EOF > verification-summary.md
+          # Deployment Verification Summary
+          
+          ## Status Overview
+          - Namespace: ${{ steps.vars.outputs.namespace }}
+          - Verification Time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## Pod Status
+          \`\`\`
+          $(kubectl get pods -n ${{ steps.vars.outputs.namespace }})
+          \`\`\`
+          
+          ## Service Status
+          \`\`\`
+          $(kubectl get services -n ${{ steps.vars.outputs.namespace }})
+          \`\`\`
+          
+          ## Ingress Status
+          \`\`\`
+          $(kubectl get ingress -n ${{ steps.vars.outputs.namespace }} 2>/dev/null || echo "No ingress resources found")
+          \`\`\`
+          
+          ## Health Check Results
+          - Backend: $BACKEND_STATUS
+          - Frontend: $FRONTEND_STATUS
+          
+          ## Access Information
+          - Frontend URL: https://talk2me-gen-z.com
+          - API URL: https://api.talk2me-gen-z.com
+          
+          ## Verification Verdict
+          ${BACKEND_STATUS:-Unknown} backend and ${FRONTEND_STATUS:-Unknown} frontend
+          EOF
+
+      # Upload verification results
+      - name: Upload verification results
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-results
+          path: verification-summary.md
+          retention-days: 7

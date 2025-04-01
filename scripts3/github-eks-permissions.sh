@@ -1,6 +1,7 @@
 #!/bin/bash
-# github-eks-permissions.sh - Comprehensive script to set up GitHub Actions permissions for EKS
+# github-eks-permissions-fixed-arn.sh - Comprehensive script to set up GitHub Actions permissions for EKS
 # Run this after eks-setup.sh to properly configure IAM roles and permissions
+# With added verification steps for policy file creation and ARN handling
 
 set -e
 
@@ -17,7 +18,36 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Policy files
+ECR_POLICY_FILE="ecr-policy.json"
+EKS_POLICY_FILE="eks-policy.json"
+K8S_API_POLICY_FILE="k8s-api-policy.json"
+ALB_POLICY_FILE="alb-policy.json"
+DNS_POLICY_FILE="dns-policy.json"
+TRUST_POLICY_FILE="trust-policy.json"
+
 echo -e "${YELLOW}Starting comprehensive GitHub Actions EKS permission setup...${NC}"
+
+# Function to verify file creation
+verify_file() {
+    local file=$1
+    local description=$2
+    
+    if [ ! -f "$file" ]; then
+        echo -e "${RED}Error: Failed to create $description file: $file${NC}"
+        exit 1
+    fi
+    
+    # Check if file is valid JSON
+    if ! jq empty "$file" 2>/dev/null; then
+        echo -e "${RED}Error: $description file is not valid JSON: $file${NC}"
+        echo -e "${RED}File contents:${NC}"
+        cat "$file"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}Successfully created and verified $description file: $file${NC}"
+}
 
 # Get AWS account ID
 AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
@@ -57,7 +87,8 @@ fi
 echo -e "${YELLOW}Creating IAM policies...${NC}"
 
 # ECR Policy
-cat > ecr-policy.json << EOF
+echo -e "${YELLOW}Creating ECR Policy file: ${ECR_POLICY_FILE}${NC}"
+cat > ${ECR_POLICY_FILE} << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -88,9 +119,11 @@ cat > ecr-policy.json << EOF
     ]
 }
 EOF
+verify_file "${ECR_POLICY_FILE}" "ECR policy"
 
 # EKS Policy
-cat > eks-policy.json << EOF
+echo -e "${YELLOW}Creating EKS Policy file: ${EKS_POLICY_FILE}${NC}"
+cat > ${EKS_POLICY_FILE} << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -114,9 +147,11 @@ cat > eks-policy.json << EOF
     ]
 }
 EOF
+verify_file "${EKS_POLICY_FILE}" "EKS policy"
 
 # Kubernetes API Policy
-cat > k8s-api-policy.json << EOF
+echo -e "${YELLOW}Creating Kubernetes API Policy file: ${K8S_API_POLICY_FILE}${NC}"
+cat > ${K8S_API_POLICY_FILE} << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -136,9 +171,11 @@ cat > k8s-api-policy.json << EOF
     ]
 }
 EOF
+verify_file "${K8S_API_POLICY_FILE}" "Kubernetes API policy"
 
 # ALB Policy
-cat > alb-policy.json << EOF
+echo -e "${YELLOW}Creating ALB Policy file: ${ALB_POLICY_FILE}${NC}"
+cat > ${ALB_POLICY_FILE} << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -204,9 +241,11 @@ cat > alb-policy.json << EOF
     ]
 }
 EOF
+verify_file "${ALB_POLICY_FILE}" "ALB policy"
 
 # Create DNS Policy
-cat > dns-policy.json << EOF
+echo -e "${YELLOW}Creating DNS Policy file: ${DNS_POLICY_FILE}${NC}"
+cat > ${DNS_POLICY_FILE} << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -247,12 +286,19 @@ cat > dns-policy.json << EOF
     ]
 }
 EOF
+verify_file "${DNS_POLICY_FILE}" "DNS policy"
 
-# Function to create or update policy
+# Function to create or update policy - FIXED ARN HANDLING
 create_or_update_policy() {
     local policy_name=$1
     local description=$2
     local policy_file=$3
+    
+    # Verify the policy file exists before proceeding
+    if [ ! -f "${policy_file}" ]; then
+        echo -e "${RED}Error: Policy file ${policy_file} does not exist!${NC}"
+        exit 1
+    fi
     
     # Check if policy already exists
     if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${policy_name}" &> /dev/null; then
@@ -275,39 +321,54 @@ create_or_update_policy() {
             --set-as-default > /dev/null
             
         echo -e "${GREEN}Updated policy: ${policy_name}${NC}"
-        POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${policy_name}"
+        echo "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${policy_name}"
     else
         echo -e "${YELLOW}Creating new policy: ${policy_name}${NC}"
-        POLICY_ARN=$(aws iam create-policy \
+        # Store the result in a variable and check for errors
+        RESULT=$(aws iam create-policy \
             --policy-name "${policy_name}" \
             --description "${description}" \
             --policy-document file://${policy_file} \
-            --query 'Policy.Arn' --output text)
-        echo -e "${GREEN}Created policy: ${POLICY_ARN}${NC}"
+            --query 'Policy.Arn' \
+            --output text 2>&1)
+            
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Error creating policy ${policy_name}: ${RESULT}${NC}"
+            exit 1
+        fi
+        
+        echo -e "${GREEN}Created policy: ${RESULT}${NC}"
+        echo "${RESULT}"
     fi
-    
-    echo "${POLICY_ARN}"
 }
 
 # Create the policies
-echo -e "${YELLOW}Verifying policy ARNs...${NC}"
-ECR_POLICY_ARN=$(create_or_update_policy "github-actions-${GITHUB_REPO}-ecr-policy" "ECR access for GitHub Actions" "ecr-policy.json")
+echo -e "${YELLOW}Creating and verifying policies...${NC}"
+ECR_POLICY_NAME="github-actions-${GITHUB_REPO}-ecr-policy"
+EKS_POLICY_NAME="github-actions-${GITHUB_REPO}-eks-policy"
+K8S_POLICY_NAME="github-actions-${GITHUB_REPO}-k8s-api-policy"
+ALB_POLICY_NAME="github-actions-${GITHUB_REPO}-alb-policy"
+DNS_POLICY_NAME="github-actions-${GITHUB_REPO}-dns-policy"
+
+# Create policies with verified files
+ECR_POLICY_ARN=$(create_or_update_policy "$ECR_POLICY_NAME" "ECR access for GitHub Actions" "${ECR_POLICY_FILE}")
 echo -e "${YELLOW}ECR Policy ARN: ${ECR_POLICY_ARN}${NC}"
 
-EKS_POLICY_ARN=$(create_or_update_policy "github-actions-${GITHUB_REPO}-eks-policy" "EKS access for GitHub Actions" "eks-policy.json")
+EKS_POLICY_ARN=$(create_or_update_policy "$EKS_POLICY_NAME" "EKS access for GitHub Actions" "${EKS_POLICY_FILE}")
 echo -e "${YELLOW}EKS Policy ARN: ${EKS_POLICY_ARN}${NC}"
 
-K8S_POLICY_ARN=$(create_or_update_policy "github-actions-${GITHUB_REPO}-k8s-api-policy" "Kubernetes API access for GitHub Actions" "k8s-api-policy.json")
+K8S_POLICY_ARN=$(create_or_update_policy "$K8S_POLICY_NAME" "Kubernetes API access for GitHub Actions" "${K8S_API_POLICY_FILE}")
 echo -e "${YELLOW}K8s API Policy ARN: ${K8S_POLICY_ARN}${NC}"
 
-ALB_POLICY_ARN=$(create_or_update_policy "github-actions-${GITHUB_REPO}-alb-policy" "ALB and network access for GitHub Actions" "alb-policy.json")
+ALB_POLICY_ARN=$(create_or_update_policy "$ALB_POLICY_NAME" "ALB and network access for GitHub Actions" "${ALB_POLICY_FILE}")
 echo -e "${YELLOW}ALB Policy ARN: ${ALB_POLICY_ARN}${NC}"
 
-DNS_POLICY_ARN=$(create_or_update_policy "github-actions-${GITHUB_REPO}-dns-policy" "DNS and Route53 access for GitHub Actions" "dns-policy.json")
+DNS_POLICY_ARN=$(create_or_update_policy "$DNS_POLICY_NAME" "DNS and Route53 access for GitHub Actions" "${DNS_POLICY_FILE}")
 echo -e "${YELLOW}DNS Policy ARN: ${DNS_POLICY_ARN}${NC}"
 
 # Create trust policy for the role
-cat > trust-policy.json << EOF
+echo -e "${YELLOW}Creating Trust Policy file: ${TRUST_POLICY_FILE}${NC}"
+cat > ${TRUST_POLICY_FILE} << EOF
 {
     "Version": "2012-10-17",
     "Statement": [
@@ -329,29 +390,38 @@ cat > trust-policy.json << EOF
     ]
 }
 EOF
+verify_file "${TRUST_POLICY_FILE}" "Trust policy"
 
 # Check if role exists
 echo -e "${YELLOW}Setting up IAM role with OIDC trust relationship...${NC}"
 if aws iam get-role --role-name "${ROLE_NAME}" &> /dev/null; then
     echo -e "${YELLOW}Updating existing IAM role: ${ROLE_NAME}${NC}"
-    aws iam update-assume-role-policy --role-name "${ROLE_NAME}" --policy-document file://trust-policy.json
+    aws iam update-assume-role-policy --role-name "${ROLE_NAME}" --policy-document file://${TRUST_POLICY_FILE}
 else
     echo -e "${YELLOW}Creating new IAM role: ${ROLE_NAME}${NC}"
     aws iam create-role --role-name "${ROLE_NAME}" \
-        --assume-role-policy-document file://trust-policy.json \
+        --assume-role-policy-document file://${TRUST_POLICY_FILE} \
         --description "Role for GitHub Actions to access AWS resources" > /dev/null
 fi
 
 ROLE_ARN=$(aws iam get-role --role-name "${ROLE_NAME}" --query "Role.Arn" --output text)
 echo -e "${GREEN}Role ARN: ${ROLE_ARN}${NC}"
 
-# Function to attach policy to role
-attach_policy() {
+# Function to safely attach policy to role - FIXED ARN HANDLING
+attach_policy_to_role() {
     local role_name=$1
     local policy_arn=$2
-    local policy_name=$(basename $policy_arn)
     
-    echo -e "${YELLOW}Attaching policy: ${policy_name}${NC}"
+    # Verify policy ARN looks valid
+    if [ -z "$policy_arn" ]; then
+        echo -e "${RED}Error: Empty policy ARN${NC}"
+        return 1
+    fi
+    
+    # Extract policy name for display
+    local policy_name=$(basename "$policy_arn")
+    
+    echo -e "${YELLOW}Attaching policy: ${policy_name} (${policy_arn})${NC}"
     
     # Check if policy is already attached
     if aws iam list-attached-role-policies --role-name "${role_name}" | grep -q "${policy_arn}"; then
@@ -361,27 +431,35 @@ attach_policy() {
             echo -e "${GREEN}Successfully attached policy: ${policy_name}${NC}"
         else
             echo -e "${RED}Failed to attach policy: ${policy_name}${NC}"
+            return 1
         fi
     fi
+    
+    return 0
 }
 
 # Attach policies to the role
 echo -e "${YELLOW}Attaching policies to the role...${NC}"
-attach_policy "${ROLE_NAME}" "${ECR_POLICY_ARN}"
-attach_policy "${ROLE_NAME}" "${EKS_POLICY_ARN}"
-attach_policy "${ROLE_NAME}" "${K8S_POLICY_ARN}"
-attach_policy "${ROLE_NAME}" "${ALB_POLICY_ARN}"
-attach_policy "${ROLE_NAME}" "${DNS_POLICY_ARN}"
+ATTACH_ERRORS=0
+
+attach_policy_to_role "${ROLE_NAME}" "${ECR_POLICY_ARN}" || ((ATTACH_ERRORS++))
+attach_policy_to_role "${ROLE_NAME}" "${EKS_POLICY_ARN}" || ((ATTACH_ERRORS++))
+attach_policy_to_role "${ROLE_NAME}" "${K8S_POLICY_ARN}" || ((ATTACH_ERRORS++))
+attach_policy_to_role "${ROLE_NAME}" "${ALB_POLICY_ARN}" || ((ATTACH_ERRORS++))
+attach_policy_to_role "${ROLE_NAME}" "${DNS_POLICY_ARN}" || ((ATTACH_ERRORS++))
+
+if [ $ATTACH_ERRORS -gt 0 ]; then
+    echo -e "${RED}Warning: ${ATTACH_ERRORS} policy attachment errors occurred.${NC}"
+fi
 
 # Also try to attach AWS managed policies
 echo -e "${YELLOW}Attaching AWS managed policies...${NC}"
 AWS_MANAGED_POLICIES=(
     "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-    "arn:aws:iam::aws:policy/AmazonECR-FullAccess"
 )
 
 for policy_arn in "${AWS_MANAGED_POLICIES[@]}"; do
-    policy_name=$(echo $policy_arn | awk -F/ '{print $2}')
+    policy_name=$(basename "$policy_arn")
     echo -e "${YELLOW}Attaching AWS managed policy: ${policy_name}${NC}"
     
     if aws iam list-attached-role-policies --role-name "${ROLE_NAME}" | grep -q "${policy_arn}"; then
@@ -399,63 +477,72 @@ done
 echo -e "${YELLOW}Updating kubeconfig for EKS cluster...${NC}"
 aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${AWS_REGION}"
 
-# Function to update aws-auth ConfigMap
-update_aws_auth() {
-    local cluster_name=$1
-    local role_arn=$2
+# Function to handle aws-auth ConfigMap updates
+update_eks_auth_config() {
+    echo -e "${YELLOW}Removing any existing role mappings to avoid duplicates...${NC}"
+    # Try to remove existing mappings, but don't fail if none exist
+    eksctl delete iamidentitymapping --cluster="${EKS_CLUSTER_NAME}" --arn="${ROLE_ARN}" || true
     
+    # Add the IAM role to the aws-auth ConfigMap
     echo -e "${YELLOW}Adding IAM role to aws-auth ConfigMap...${NC}"
     
-    # Check if eksctl is installed
-    if ! command -v eksctl &> /dev/null; then
-        echo -e "${RED}eksctl not found. Installing...${NC}"
-        
-        # Install eksctl
-        ARCH=$(uname -m)
-        if [ "$ARCH" == "x86_64" ]; then
-            curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-        else
-            curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_arm64.tar.gz" | tar xz -C /tmp
-        fi
-        
-        sudo mv /tmp/eksctl /usr/local/bin
-        
-        if ! command -v eksctl &> /dev/null; then
-            echo -e "${RED}Failed to install eksctl. Please manually update aws-auth ConfigMap.${NC}"
-            echo -e "${YELLOW}Add this to your aws-auth ConfigMap:${NC}"
-            echo "mapRoles:"
-            echo "  - rolearn: ${role_arn}"
-            echo "    username: github-actions"
-            echo "    groups:"
-            echo "      - system:masters"
-            return 1
-        fi
-    fi
-    
-    # First try to delete any existing entry to avoid conflicts
-    eksctl delete iamidentitymapping \
-        --cluster "${cluster_name}" \
-        --arn "${role_arn}" \
-        --region "${AWS_REGION}" || true
-    
-    # Add the role to aws-auth ConfigMap
     if eksctl create iamidentitymapping \
-        --cluster "${cluster_name}" \
-        --region "${AWS_REGION}" \
-        --arn "${role_arn}" \
-        --username "github-actions" \
-        --group "system:masters"; then
+        --cluster "${EKS_CLUSTER_NAME}" \
+        --arn="${ROLE_ARN}" \
+        --username="github-actions" \
+        --group="system:masters"; then
         echo -e "${GREEN}Successfully added role to aws-auth ConfigMap.${NC}"
+        return 0
     else
-        echo -e "${RED}Failed to update aws-auth ConfigMap. Please do it manually.${NC}"
+        echo -e "${RED}Failed to update aws-auth ConfigMap with eksctl. Trying alternative method...${NC}"
         return 1
     fi
-    
-    return 0
 }
 
-# Update aws-auth ConfigMap
-update_aws_auth "${EKS_CLUSTER_NAME}" "${ROLE_ARN}"
+# Try to update aws-auth ConfigMap
+update_eks_auth_config || {
+    echo -e "${YELLOW}Attempting manual update of aws-auth ConfigMap...${NC}"
+    
+    # Get current aws-auth ConfigMap
+    if kubectl -n kube-system get configmap aws-auth -o yaml > aws-auth-current.yaml; then
+        # Set up markers to help with sed replacement
+        START_MARKER="# --- GITHUB ACTIONS ROLE START ---"
+        END_MARKER="# --- GITHUB ACTIONS ROLE END ---"
+        
+        # Check if the markers already exist in the ConfigMap
+        if grep -q "${START_MARKER}" aws-auth-current.yaml; then
+            # Update the existing entry
+            sed -i "/${START_MARKER}/,/${END_MARKER}/c\\
+${START_MARKER}\\
+    - groups:\\
+      - system:masters\\
+      rolearn: ${ROLE_ARN}\\
+      username: github-actions\\
+${END_MARKER}" aws-auth-current.yaml
+        else
+            # Add a new entry
+            sed -i "/mapRoles: |/a\\
+${START_MARKER}\\
+    - groups:\\
+      - system:masters\\
+      rolearn: ${ROLE_ARN}\\
+      username: github-actions\\
+${END_MARKER}" aws-auth-current.yaml
+        fi
+        
+        # Apply the updated ConfigMap
+        kubectl apply -f aws-auth-current.yaml
+        rm aws-auth-current.yaml
+    else
+        echo -e "${RED}Unable to get aws-auth ConfigMap. You may need to update it manually.${NC}"
+        echo -e "${RED}Add the following to the aws-auth ConfigMap:${NC}"
+        echo "mapRoles:"
+        echo "  - rolearn: ${ROLE_ARN}"
+        echo "    username: github-actions"
+        echo "    groups:"
+        echo "      - system:masters"
+    fi
+}
 
 # Create namespace if it doesn't exist
 echo -e "${YELLOW}Creating namespace for your application...${NC}"
@@ -466,8 +553,13 @@ else
     echo -e "${GREEN}Namespace ${GITHUB_REPO} already exists.${NC}"
 fi
 
+# List and verify all attached policies for final confirmation
+echo -e "${YELLOW}Verifying attached policies for role ${ROLE_NAME}...${NC}"
+aws iam list-attached-role-policies --role-name "${ROLE_NAME}"
+
 # Clean up temporary files
-rm -f ecr-policy.json eks-policy.json k8s-api-policy.json alb-policy.json dns-policy.json trust-policy.json
+echo -e "${YELLOW}Cleaning up temporary policy files...${NC}"
+rm -f ${ECR_POLICY_FILE} ${EKS_POLICY_FILE} ${K8S_API_POLICY_FILE} ${ALB_POLICY_FILE} ${DNS_POLICY_FILE} ${TRUST_POLICY_FILE}
 
 echo -e "${GREEN}============================================================${NC}"
 echo -e "${GREEN}GitHub Actions EKS permission setup completed successfully!${NC}"

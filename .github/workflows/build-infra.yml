@@ -1,0 +1,304 @@
+# .github/workflows/infrastructure.yml
+name: 1. Setup Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'EKS cluster name'
+        required: false
+        default: 'talk2me-cluster'
+      region:
+        description: 'AWS region'
+        required: false
+        default: 'us-east-1'
+      domain:
+        description: 'Domain name'
+        required: false
+        default: 'talk2me-gen-z.com'
+      skip_cluster_creation:
+        description: 'Skip EKS cluster creation (use if cluster already exists)'
+        required: false
+        default: 'false'
+        type: boolean
+      skip_dns_setup:
+        description: 'Skip DNS and certificate setup'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  setup-infrastructure:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC auth
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ github.event.inputs.region || 'us-east-1' }}
+          mask-aws-account-id: false
+
+      - name: Verify AWS authentication
+        run: |
+          echo "Verifying AWS authentication:"
+          aws sts get-caller-identity
+          echo "AWS credentials successfully configured"
+
+      - name: Install required tools
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          
+          # Install eksctl
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          
+          # Install Helm
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          
+          # Verify installations
+          kubectl version --client
+          eksctl version
+          helm version
+
+      - name: Create EKS cluster
+        if: ${{ github.event.inputs.skip_cluster_creation != 'true' }}
+        id: create-eks-cluster
+        run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
+          REGION="${{ github.event.inputs.region || 'us-east-1' }}"
+          
+          echo "Creating EKS cluster: $CLUSTER_NAME in region $REGION"
+          
+          eksctl create cluster \
+            --name "$CLUSTER_NAME" \
+            --region "$REGION" \
+            --node-type "t3.medium" \
+            --nodes-min 2 \
+            --nodes-max 4 \
+            --nodes 2 \
+            --with-oidc \
+            --managed \
+            --alb-ingress-access
+            
+          echo "EKS cluster created successfully!"
+          
+          # Store cluster name in outputs
+          echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+
+      - name: Set up GitHub permissions for EKS
+        id: set-up-github-permissions
+        run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
+          REGION="${{ github.event.inputs.region || 'us-east-1' }}"
+          
+          echo "Setting up GitHub OIDC provider and IAM roles..."
+          
+          # Get AWS account ID
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+          
+          # Create GitHub OIDC provider if not exists
+          GITHUB_OIDC_PROVIDER_ARN=$(aws iam list-open-id-connect-providers | jq -r '.OpenIDConnectProviderList[] | select(.Arn | contains("token.actions.githubusercontent.com")) | .Arn')
+          
+          if [ -z "$GITHUB_OIDC_PROVIDER_ARN" ]; then
+            echo "Creating GitHub OIDC provider..."
+            THUMBPRINT="6938fd4d98bab03faadb97b34396831e3780aea1"
+            
+            GITHUB_OIDC_PROVIDER_ARN=$(aws iam create-open-id-connect-provider \
+              --url "https://token.actions.githubusercontent.com" \
+              --client-id-list "sts.amazonaws.com" \
+              --thumbprint-list "$THUMBPRINT" \
+              --query "OpenIDConnectProviderArn" --output text)
+          else
+            echo "GitHub OIDC provider already exists: $GITHUB_OIDC_PROVIDER_ARN"
+          fi
+          
+          # Create IAM role for GitHub Actions
+          ROLE_NAME="github-actions-talk2me-role"
+          GITHUB_ORG="${{ github.repository_owner }}"
+          GITHUB_REPO="talk2me"
+          
+          # Create trust policy
+          cat > trust-policy.json << EOF
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Principal": {
+                          "Federated": "${GITHUB_OIDC_PROVIDER_ARN}"
+                      },
+                      "Action": "sts:AssumeRoleWithWebIdentity",
+                      "Condition": {
+                          "StringEquals": {
+                              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                          },
+                          "StringLike": {
+                              "token.actions.githubusercontent.com:sub": "repo:${GITHUB_ORG}/${GITHUB_REPO}:*"
+                          }
+                      }
+                  }
+              ]
+          }
+          EOF
+          
+          # Check if role exists, create or update
+          if aws iam get-role --role-name "${ROLE_NAME}" &> /dev/null; then
+            echo "Updating existing IAM role: ${ROLE_NAME}"
+            aws iam update-assume-role-policy --role-name "${ROLE_NAME}" --policy-document file://trust-policy.json
+          else
+            echo "Creating new IAM role: ${ROLE_NAME}"
+            aws iam create-role --role-name "${ROLE_NAME}" \
+              --assume-role-policy-document file://trust-policy.json \
+              --description "Role for GitHub Actions to access AWS resources"
+          fi
+          
+          ROLE_ARN=$(aws iam get-role --role-name "${ROLE_NAME}" --query "Role.Arn" --output text)
+          echo "Role ARN: ${ROLE_ARN}"
+          
+          # Attach necessary policies
+          aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+          aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonECR-FullAccess"
+          
+          # Update EKS aws-auth ConfigMap
+          echo "Updating aws-auth ConfigMap..."
+          eksctl create iamidentitymapping \
+            --cluster "${CLUSTER_NAME}" \
+            --region "${REGION}" \
+            --arn "${ROLE_ARN}" \
+            --username "github-actions" \
+            --group "system:masters"
+          
+          echo "GitHub permissions for EKS set up successfully"
+          
+          # Save role ARN for future workflows
+          echo "role_arn=${ROLE_ARN}" >> $GITHUB_OUTPUT
+
+      - name: Create ECR repositories
+        run: |
+          echo "Creating ECR repositories..."
+          
+          # Check if repositories exist, create if needed
+          if ! aws ecr describe-repositories --repository-names talk2me-backend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
+            echo "Creating backend ECR repository..."
+            aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true
+          fi
+          
+          if ! aws ecr describe-repositories --repository-names talk2me-frontend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
+            echo "Creating frontend ECR repository..."
+            aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true
+          fi
+          
+          echo "ECR repositories created/verified"
+
+      - name: Set up DNS and SSL certificates
+        if: ${{ github.event.inputs.skip_dns_setup != 'true' }}
+        id: set-up-dns-and-ssl
+        run: |
+          DOMAIN="${{ github.event.inputs.domain || 'talk2me-gen-z.com' }}"
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
+          REGION="${{ github.event.inputs.region || 'us-east-1' }}"
+          
+          echo "Setting up DNS and SSL certificates for $DOMAIN..."
+          
+          # Install AWS Load Balancer Controller
+          echo "Installing AWS Load Balancer Controller..."
+          
+          # Create IAM policy for ALB controller
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          POLICY_ARN=$(aws iam list-policies --query "Policies[?PolicyName=='${POLICY_NAME}'].Arn" --output text)
+          
+          if [ -z "${POLICY_ARN}" ]; then
+            echo "Creating IAM policy for AWS Load Balancer Controller..."
+            curl -o alb-policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
+            
+            POLICY_ARN=$(aws iam create-policy \
+              --policy-name ${POLICY_NAME} \
+              --policy-document file://alb-policy.json \
+              --query 'Policy.Arn' --output text)
+            
+            rm alb-policy.json
+          fi
+          
+          # Create service account for ALB controller
+          eksctl create iamserviceaccount \
+            --cluster=${CLUSTER_NAME} \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=${POLICY_ARN} \
+            --override-existing-serviceaccounts \
+            --approve \
+            --region ${REGION}
+          
+          # Install ALB controller with Helm
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${CLUSTER_NAME} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller
+          
+          # Request ACM certificate
+          echo "Requesting ACM certificate for ${DOMAIN} and *.${DOMAIN}..."
+          
+          CERTIFICATE_ARN=$(aws acm request-certificate \
+            --domain-name "${DOMAIN}" \
+            --subject-alternative-names "*.${DOMAIN}" \
+            --validation-method DNS \
+            --region ${REGION} \
+            --query 'CertificateArn' --output text)
+          
+          echo "Certificate requested successfully with ARN: ${CERTIFICATE_ARN}"
+          
+          # Save certificate ARN for future use
+          echo "certificate_arn=${CERTIFICATE_ARN}" >> $GITHUB_OUTPUT
+          
+          echo "DNS and SSL setup completed!"
+
+      - name: Create Kubernetes namespace
+        run: |
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
+          REGION="${{ github.event.inputs.region || 'us-east-1' }}"
+          
+          # Update kubeconfig
+          aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${REGION}"
+          
+          # Create namespace
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+          
+          echo "Kubernetes namespace 'talk2me' created/verified"
+
+      - name: Save infrastructure details
+        run: |
+          # Create output file with infrastructure details
+          cat << EOF > infrastructure-details.json
+          {
+            "cluster_name": "${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}",
+            "region": "${{ github.event.inputs.region || 'us-east-1' }}",
+            "domain": "${{ github.event.inputs.domain || 'talk2me-gen-z.com' }}",
+            "role_arn": "${{ steps.set-up-github-permissions.outputs.role_arn }}",
+            "certificate_arn": "${{ steps.set-up-dns-and-ssl.outputs.certificate_arn }}"
+          }
+          EOF
+          
+          # Upload as artifact
+          echo "Infrastructure setup completed. You can now run the build and deploy workflows."
+
+      - name: Upload infrastructure details
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-details
+          path: infrastructure-details.json
+          retention-days: 90

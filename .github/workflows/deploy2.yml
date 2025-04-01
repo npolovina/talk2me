@@ -1,23 +1,28 @@
-# # .github/workflows/deploy.yml
-# name: 2. Deploy to K8s
+# .github/workflows/deploy.yml
+name: 3. Deploy to K8s
 
-# on:
-#   workflow_run:
-#     workflows: ["1. Build and Push Images"]
-#     types:
-#       - completed
-#     branches: [main]
-#   # Allow manual deployments
-#   workflow_dispatch:
-#     inputs:
-#       image_tag:
-#         description: 'Image tag to deploy (defaults to latest build)'
-#         required: false
-#         default: ''
-#       namespace:
-#         description: 'Kubernetes namespace to deploy to'
-#         required: false
-#         default: 'talk2me'
+on:
+  workflow_run:
+    workflows: ["2. Build and Push Images"]
+    types:
+      - completed
+    branches: [main]
+  # Allow manual deployments
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to latest build)'
+        required: false
+        default: ''
+      namespace:
+        description: 'Kubernetes namespace to deploy to'
+        required: false
+        default: 'talk2me'
+      run_verification:
+        description: 'Run verification workflow after deployment'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
   deploy:
@@ -67,13 +72,6 @@ jobs:
         with:
           version: 'latest'
 
-      # Install eksctl
-      - name: Install eksctl
-        run: |
-          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-          sudo mv /tmp/eksctl /usr/local/bin
-          eksctl version
-
       # Get AWS account ID
       - name: Get AWS account ID
         id: aws-account
@@ -103,6 +101,10 @@ jobs:
             if [ -f "./deployment-info/build_time.txt" ]; then
               BUILD_TIME=$(cat ./deployment-info/build_time.txt)
               echo "Image was built at: ${BUILD_TIME}"
+            fi
+            if [ -f "./deployment-info/registry.txt" ]; then
+              REGISTRY=$(cat ./deployment-info/registry.txt)
+              echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
             fi
           else
             # Fallback to 'latest' if no tag is available
@@ -173,26 +175,105 @@ jobs:
           export AWS_REGION="${{ secrets.AWS_REGION }}"
           export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
           export NAMESPACE="${{ steps.vars.outputs.namespace }}"
-          export DEEPSEEK_API_KEY_BASE64="$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)"
+          export REGISTRY="${{ steps.vars.outputs.registry || format('{0}.dkr.ecr.{1}.amazonaws.com', steps.aws-account.outputs.account_id, secrets.AWS_REGION) }}"
           
-          # Process each manifest
-          for manifest in k8s/*.yaml; do
-            if [ -f "$manifest" ]; then
-              echo "Processing $manifest..."
-              # Replace environment variables in manifest
-              envsubst < "$manifest" > processed_manifest.yaml
-              # Apply the manifest
-              kubectl apply -f processed_manifest.yaml
-              # Save result code to check for errors
-              RESULT=$?
-              if [ $RESULT -ne 0 ]; then
-                echo "Warning: Failed to apply $manifest with exit code $RESULT"
-                echo "Contents of processed manifest:"
-                cat processed_manifest.yaml
-              fi
-              rm processed_manifest.yaml
-            fi
-          done
+          # Create deployments directory if it doesn't exist
+          mkdir -p deployments
+          
+          # Generate backend deployment
+          cat << EOF > deployments/backend-deployment.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-backend
+            namespace: ${NAMESPACE}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-backend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-backend
+              spec:
+                containers:
+                - name: backend
+                  image: ${REGISTRY}/talk2me-backend:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: DEEPSEEK_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: talk2me-secrets
+                        key: deepseek-api-key
+                  resources:
+                    limits:
+                      cpu: "500m"
+                      memory: "512Mi"
+                    requests:
+                      cpu: "250m"
+                      memory: "256Mi"
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-backend
+            namespace: ${NAMESPACE}
+          spec:
+            selector:
+              app: talk2me-backend
+            ports:
+            - port: 80
+              targetPort: 80
+            type: ClusterIP
+          EOF
+          
+          # Generate ingress configuration
+          cat << EOF > deployments/ingress.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: ${NAMESPACE}
+            annotations:
+              kubernetes.io/ingress.class: "alb"
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/certificate-arn: "${{ secrets.CERTIFICATE_ARN }}"
+              alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+              external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
+          spec:
+            rules:
+            - host: talk2me-gen-z.com
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-frontend
+                      port:
+                        number: 80
+            - host: api.talk2me-gen-z.com
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-backend
+                      port:
+                        number: 80
+          EOF
+          
+          # Apply all deployment manifests
+          kubectl apply -f deployments/backend-deployment.yaml
+          kubectl apply -f deployments/frontend-deployment.yaml
+          kubectl apply -f deployments/ingress.yaml
           
           # List all applied resources
           echo "Deployed resources in namespace ${{ steps.vars.outputs.namespace }}:"
@@ -235,3 +316,54 @@ jobs:
           fi
           
           echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          
+      # Save deployment results
+      - name: Save deployment results
+        run: |
+          # Create deployment summary
+          cat << EOF > deployment-summary.md
+          # Deployment Summary
+          
+          ## Details
+          - Namespace: ${{ steps.vars.outputs.namespace }}
+          - Image Tag: ${{ steps.vars.outputs.image_tag }}
+          - Deployed At: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## Resources
+          \`\`\`
+          $(kubectl get pods,svc,ingress -n ${{ steps.vars.outputs.namespace }})
+          \`\`\`
+          
+          ## Access Information
+          - Frontend URL: https://talk2me-gen-z.com
+          - API URL: https://api.talk2me-gen-z.com
+          
+          ## Deployment Status
+          - Backend: $(kubectl get deployment talk2me-backend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+          - Frontend: $(kubectl get deployment talk2me-frontend -n ${{ steps.vars.outputs.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+          EOF
+
+      - name: Upload deployment results
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-results
+          path: deployment-summary.md
+          retention-days: 7
+          
+      # Trigger verification workflow if requested
+      - name: Trigger verification workflow
+        if: ${{ github.event.inputs.run_verification != 'false' }}
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'verify.yml',
+              ref: '${{ github.ref_name }}',
+              inputs: {
+                namespace: '${{ steps.vars.outputs.namespace }}'
+              }
+            });
+            console.log('Verification workflow triggered');

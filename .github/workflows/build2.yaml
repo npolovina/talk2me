@@ -1,0 +1,175 @@
+# .github/workflows/build.yml
+name: 2. Build and Push Images
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
+      - '.github/workflows/infrastructure.yml'
+      - '.github/workflows/verify.yml'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'k8s/**'
+      - '.github/workflows/deploy.yml'
+      - '.github/workflows/infrastructure.yml'
+      - '.github/workflows/verify.yml'
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      run_deployment:
+        description: 'Run deployment workflow after build'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC auth
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          mask-aws-account-id: false # Show account ID for better debugging
+
+      - name: Verify AWS authentication
+        run: |
+          echo "Verifying AWS authentication:"
+          aws sts get-caller-identity
+          echo "AWS credentials successfully configured"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: vars
+        run: |
+          # Use git short SHA for the image tag
+          echo "image_tag=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
+          # Also include branch name for feature branches
+          if [[ "${{ github.ref_name }}" != "main" && "${{ github.ref_type }}" == "branch" ]]; then
+            BRANCH_TAG=$(echo "${{ github.ref_name }}" | tr '/' '-')
+            echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
+          fi
+
+      # Check if ECR repositories exist, create if needed
+      - name: Verify ECR repositories
+        run: |
+          # Check if backend repository exists
+          if ! aws ecr describe-repositories --repository-names talk2me-backend --region ${{ secrets.AWS_REGION }} 2>/dev/null; then
+            echo "Creating backend ECR repository..."
+            aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true
+          fi
+          
+          # Check if frontend repository exists
+          if ! aws ecr describe-repositories --repository-names talk2me-frontend --region ${{ secrets.AWS_REGION }} 2>/dev/null; then
+            echo "Creating frontend ECR repository..."
+            aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true
+          fi
+
+      # Build and push backend image
+      - name: Build and push backend image
+        id: build-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/talk2me-backend:${{ steps.vars.outputs.image_tag }}
+            ${{ steps.login-ecr.outputs.registry }}/talk2me-backend:latest
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/talk2me-backend:latest
+          cache-to: type=inline
+          build-args: |
+            GITHUB_SHA=${{ github.sha }}
+            GITHUB_REF=${{ github.ref }}
+
+      # Build and push frontend image
+      - name: Build and push frontend image
+        id: build-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/talk2me-frontend:${{ steps.vars.outputs.image_tag }}
+            ${{ steps.login-ecr.outputs.registry }}/talk2me-frontend:latest
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/talk2me-frontend:latest
+          cache-to: type=inline
+          build-args: |
+            GITHUB_SHA=${{ github.sha }}
+            GITHUB_REF=${{ github.ref }}
+            
+      # Store the image tag for deployment workflow
+      - name: Store image tag for deployment
+        if: github.event_name != 'pull_request'
+        run: |
+          # Save image tag for deployment workflow
+          echo "${{ steps.vars.outputs.image_tag }}" > image_tag.txt
+          # Save time of build
+          echo "$(date -u +'%Y-%m-%d %H:%M:%S UTC')" > build_time.txt
+          # Save repository details
+          echo "${{ steps.login-ecr.outputs.registry }}" > registry.txt
+          # Save a summary for the artifact viewer
+          cat << EOF > build_info.md
+          # Build Summary
+          - Image Tag: \`${{ steps.vars.outputs.image_tag }}\`
+          - Repository: ${{ steps.login-ecr.outputs.registry }}
+          - Built from: ${{ github.repository }}@${{ github.ref_name }}
+          - Commit: ${{ github.sha }}
+          - Built at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## Images
+          - Backend: \`${{ steps.login-ecr.outputs.registry }}/talk2me-backend:${{ steps.vars.outputs.image_tag }}\`
+          - Frontend: \`${{ steps.login-ecr.outputs.registry }}/talk2me-frontend:${{ steps.vars.outputs.image_tag }}\`
+          
+          ## Build Status
+          - Backend: ${{ steps.build-backend.outcome == 'success' ? '✅ Success' : '❌ Failed' }}
+          - Frontend: ${{ steps.build-frontend.outcome == 'success' ? '✅ Success' : '❌ Failed' }}
+          EOF
+
+      - name: Upload deployment artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-info
+          path: |
+            image_tag.txt
+            build_time.txt
+            registry.txt
+            build_info.md
+          retention-days: 7
+          
+      # Trigger deployment workflow if requested
+      - name: Trigger deployment workflow
+        if: ${{ github.event_name != 'pull_request' && (github.event.inputs.run_deployment == 'true' || github.event.inputs.run_deployment == '') }}
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yml',
+              ref: '${{ github.ref_name }}',
+              inputs: {
+                image_tag: '${{ steps.vars.outputs.image_tag }}'
+              }
+            });
+            console.log('Deployment workflow triggered');

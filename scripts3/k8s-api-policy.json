@@ -1,0 +1,18 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "eks:ListFargateProfiles",
+                "eks:DescribeFargateProfile",
+                "eks:ListNodegroups",
+                "eks:DescribeNodegroup",
+                "eks:ListUpdates",
+                "eks:DescribeUpdate",
+                "eks:AccessKubernetesApi"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
