@@ -255,22 +255,23 @@ jobs:
             
             # Save role ARN for future workflows
             echo "role_arn=${ROLE_ARN}" >> $GITHUB_OUTPUT
-                - name: Create ECR repositories
-                    run: |
-                    echo "Creating ECR repositories..."
-                    
-                    # Check if repositories exist, create if needed
-                    if ! aws ecr describe-repositories --repository-names talk2me-backend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
-                        echo "Creating backend ECR repository..."
-                        aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true
-                    fi
-                    
-                    if ! aws ecr describe-repositories --repository-names talk2me-frontend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
-                        echo "Creating frontend ECR repository..."
-                        aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true
-                    fi
-                    
-                    echo "ECR repositories created/verified"
+            
+      - name: Create ECR repositories
+        run: |
+            echo "Creating ECR repositories..."
+            
+            # Check if repositories exist, create if needed
+            if ! aws ecr describe-repositories --repository-names talk2me-backend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
+                echo "Creating backend ECR repository..."
+                aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true
+            fi
+            
+            if ! aws ecr describe-repositories --repository-names talk2me-frontend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
+                echo "Creating frontend ECR repository..."
+                aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true
+            fi
+            
+            echo "ECR repositories created/verified"
 
       - name: Set up DNS and SSL certificates
         if: ${{ github.event.inputs.skip_dns_setup != 'true' }}
