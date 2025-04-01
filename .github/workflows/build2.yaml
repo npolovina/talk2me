@@ -173,6 +173,6 @@ jobs:
         if: ${{ github.event_name != 'pull_request' && (github.event.inputs.run_deployment == 'true' || github.event.inputs.run_deployment == '') }}
         uses: benc-uk/workflow-dispatch@v1
         with:
-          workflow: deploy.yml
+          workflow: deploy2.yml
           token: ${{ secrets.PAT_TOKEN }}
           inputs: '{"image_tag": "${{ steps.vars.outputs.image_tag }}"}'
