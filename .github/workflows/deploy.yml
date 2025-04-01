@@ -52,11 +52,16 @@ jobs:
           aws sts get-caller-identity
           echo "AWS credentials successfully configured"
 
-      # Install kubectl
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'latest'
+      # Install required tools
+      - name: Install tools
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+          
+          # Install jq for JSON processing
+          sudo apt-get update && sudo apt-get install -y jq
 
       # Get AWS account ID
       - name: Get AWS account ID
@@ -79,23 +84,68 @@ jobs:
             echo "Warning: No image tag found, using 'latest' instead" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # Update kubeconfig to connect to EKS cluster
-      - name: Update kubeconfig for EKS cluster
+      # Configure access to EKS cluster with proper authentication
+      - name: Configure EKS access
         run: |
-          echo "Setting up kubeconfig for EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}"
+          echo "Setting up kubectl configuration for EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}"
           
-          # Get identity info for debugging
+          # Get AWS identity for debugging
           echo "Current AWS identity:"
           aws sts get-caller-identity
-        
-          # Update kubeconfig
-          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
-            --name ${{ secrets.EKS_CLUSTER_NAME }}
-        
-          # Verify cluster access
-          echo "Verifying cluster access:"
-          kubectl cluster-info
-          kubectl get nodes
+          
+          # Get cluster endpoint and CA certificate
+          CLUSTER_ENDPOINT=$(aws eks describe-cluster --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }} --query "cluster.endpoint" --output text)
+          CLUSTER_CA=$(aws eks describe-cluster --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }} --query "cluster.certificateAuthority.data" --output text)
+          
+          # Create kubeconfig manually with token authentication
+          cat > kubeconfig << EOF
+          apiVersion: v1
+          clusters:
+          - cluster:
+              server: ${CLUSTER_ENDPOINT}
+              certificate-authority-data: ${CLUSTER_CA}
+            name: eks-cluster
+          contexts:
+          - context:
+              cluster: eks-cluster
+              user: eks-user
+            name: eks-context
+          current-context: eks-context
+          kind: Config
+          preferences: {}
+          users:
+          - name: eks-user
+            user:
+              exec:
+                apiVersion: client.authentication.k8s.io/v1beta1
+                command: aws
+                args:
+                  - eks
+                  - get-token
+                  - --cluster-name
+                  - ${{ secrets.EKS_CLUSTER_NAME }}
+                  - --region
+                  - ${{ secrets.AWS_REGION }}
+          EOF
+          
+          # Set KUBECONFIG environment variable
+          echo "KUBECONFIG=$(pwd)/kubeconfig" >> $GITHUB_ENV
+          
+          # Test connection with retry logic
+          for i in {1..3}; do
+            echo "Attempt $i: Testing connection to EKS cluster..."
+            if kubectl get nodes; then
+              echo "✅ Successfully connected to EKS cluster!"
+              break
+            else
+              if [ $i -eq 3 ]; then
+                echo "❌ Failed to connect to EKS cluster after 3 attempts"
+                exit 1
+              fi
+              echo "Retrying in 5 seconds..."
+              sleep 5
+            fi
+          done
 
       # Create namespace if it doesn't exist
       - name: Create namespace if needed
@@ -109,8 +159,26 @@ jobs:
           echo "Creating Kubernetes secret..."
           DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
           
+          # Create secret configuration
+          cat << EOF > ./secret.yaml
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: talk2me-secrets
+            namespace: talk2me
+          type: Opaque
+          data:
+            deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
+          EOF
+          
           # Apply the secret
-          kubectl apply -f ./k8s/secret.yaml
+          kubectl apply -f ./secret.yaml
+          
+          # Verify secret was created
+          kubectl get secrets -n talk2me
+          
+          # Clean up
+          rm ./secret.yaml
 
       # Process and apply Kubernetes manifests
       - name: Deploy to EKS
