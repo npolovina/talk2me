@@ -117,8 +117,8 @@ jobs:
       - name: Set up GitHub permissions for EKS
         id: set-up-github-permissions
         run: |
-            CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
-            REGION="${{ github.event.inputs.region || 'us-east-1' }}"
+          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
+          REGION="${{ github.event.inputs.region || 'us-east-1' }}"
             
             echo "Setting up GitHub OIDC provider and IAM roles..."
             
@@ -145,6 +145,7 @@ jobs:
             ROLE_NAME="github-actions-talk2me-role"
             GITHUB_ORG="npolovina"
             GITHUB_REPO="talk2me"
+            USERNAME="github-actions-${GITHUB_ORG}-${GITHUB_REPO}"
             
             # Create trust policy
             cat > trust-policy.json << EOF
@@ -180,7 +181,7 @@ jobs:
                 --assume-role-policy-document file://trust-policy.json \
                 --description "Role for GitHub Actions to access AWS resources"
             fi
-            
+             
             # Create custom ECR policy
             cat > ecr-policy.json << EOF
             {
@@ -248,14 +249,15 @@ jobs:
                 --cluster "${CLUSTER_NAME}" \
                 --region "${REGION}" \
                 --arn "${ROLE_ARN}" \
-                --username "github-actions-talk2me-role" \
+                --username "${ROLE_NAME}" \
                 --group "system:masters"
-            
+
+                        
             echo "GitHub permissions for EKS set up successfully"
             
             # Save role ARN for future workflows
             echo "role_arn=${ROLE_ARN}" >> $GITHUB_OUTPUT
-            
+
       - name: Create ECR repositories
         run: |
             echo "Creating ECR repositories..."
