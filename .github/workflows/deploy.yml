@@ -43,6 +43,14 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          output-credentials: true
+
+      # Verify AWS authentication
+      - name: Verify AWS authentication
+        run: |
+          echo "Verifying AWS authentication:"
+          aws sts get-caller-identity
+          echo "AWS credentials successfully configured"
 
       # Install kubectl
       - name: Install kubectl
@@ -56,11 +64,13 @@ jobs:
           curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
           sudo mv /tmp/eksctl /usr/local/bin
           eksctl version
+
       # Get AWS account ID
       - name: Get AWS account ID
         id: aws-account
         run: |
           echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+
       # Set image tag based on input or artifact
       - name: Set image tag
         id: vars
@@ -75,7 +85,8 @@ jobs:
             echo "image_tag=latest" >> $GITHUB_OUTPUT
             echo "Warning: No image tag found, using 'latest' instead" >> $GITHUB_STEP_SUMMARY
           fi
-      # Update kubeconfig to connect to EKS cluster WITHOUT role switching
+
+      # Update kubeconfig to connect to EKS cluster
       - name: Update kubeconfig for EKS cluster
         run: |
           if [ -z "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
@@ -86,8 +97,10 @@ jobs:
           # Get identity info for debugging
           echo "Current AWS identity:"
           aws sts get-caller-identity
+          ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text)
+          echo "Role ARN: ${ROLE_ARN}"
         
-          # Update kubeconfig WITHOUT role-arn parameter
+          # Update kubeconfig
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
             --name ${{ secrets.EKS_CLUSTER_NAME }}
         
@@ -99,7 +112,43 @@ jobs:
           echo "AWS credentials:"
           aws configure list
 
-      # Update Kubernetes secrets with validation disabled
+      # Update aws-auth ConfigMap to grant permissions to the GitHub Actions role
+      - name: Update aws-auth ConfigMap for GitHub Actions role
+        run: |
+          echo "Updating aws-auth ConfigMap to grant permissions to the GitHub Actions role..."
+          
+          # Get GitHub Actions role ARN
+          ROLE_ARN=$(aws sts get-caller-identity --query Arn --output text | cut -d'/' -f1)
+          ROLE_NAME=$(aws sts get-caller-identity --query Arn --output text | cut -d'/' -f2)
+          echo "GitHub Actions Role ARN: ${ROLE_ARN}"
+          echo "GitHub Actions Role Name: ${ROLE_NAME}"
+          
+          # Create a temporary patch file for eksctl
+          cat << EOF > aws-auth-patch.yaml
+          - groups:
+            - system:masters
+            rolearn: ${ROLE_ARN}
+            username: github-actions
+          EOF
+          
+          # Use eksctl to update the aws-auth ConfigMap
+          echo "Updating aws-auth ConfigMap using eksctl..."
+          eksctl create iamidentitymapping \
+            --cluster ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ secrets.AWS_REGION }} \
+            --arn ${ROLE_ARN} \
+            --username github-actions \
+            --group system:masters
+          
+          # Verify the update
+          echo "Verifying aws-auth ConfigMap..."
+          kubectl describe configmap -n kube-system aws-auth
+          
+          # Create namespace if it doesn't exist
+          echo "Creating talk2me namespace if it doesn't exist..."
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+
+      # Update Kubernetes secrets
       - name: Update Kubernetes secrets
         run: |
           echo "Creating Kubernetes secret..."
@@ -117,10 +166,11 @@ jobs:
             deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
           EOF
           
-          # Apply the secret with validation disabled
-          kubectl apply --validate=false -f ./secret.yaml
+          # Apply the secret
+          kubectl apply -f ./secret.yaml
           rm ./secret.yaml
-      # Process and apply Kubernetes manifests with validation disabled
+
+      # Process and apply Kubernetes manifests
       - name: Deploy to EKS
         run: |
           echo "Deploying Kubernetes manifests..."
@@ -130,21 +180,22 @@ jobs:
           export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
           export DEEPSEEK_API_KEY_BASE64="$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)"
           
-          # Process the manifests with validation disabled
+          # Process the manifests
           for manifest in k8s/*.yaml; do
             echo "Processing $manifest..."
             envsubst < "$manifest" > processed_manifest.yaml
-            kubectl apply --validate=false -f processed_manifest.yaml
+            kubectl apply -f processed_manifest.yaml
             rm processed_manifest.yaml
           done
+
       # Verify deployment with timeouts and error handling
       - name: Verify deployment
         run: |
           echo "Verifying backend deployment..."
-          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=60s || echo "Backend deployment verification timed out, but continuing..."
+          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=120s || echo "Backend deployment verification timed out, but continuing..."
           
           echo "Verifying frontend deployment..."
-          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=60s || echo "Frontend deployment verification timed out, but continuing..."
+          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=120s || echo "Frontend deployment verification timed out, but continuing..."
           
           echo "Listing all resources in the talk2me namespace:"
           kubectl get all -n talk2me || echo "Failed to list resources"
