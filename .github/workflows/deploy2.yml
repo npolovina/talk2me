@@ -403,37 +403,39 @@ jobs:
           kind: Ingress
           metadata:
             name: talk2me-ingress
-            namespace: ${NAMESPACE}
+            namespace: talk2me
             annotations:
-              kubernetes.io/ingress.class: "alb"
-              alb.ingress.kubernetes.io/scheme: internet-facing
-              alb.ingress.kubernetes.io/target-type: ip
-              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-              alb.ingress.kubernetes.io/ssl-redirect: '443'
-              alb.ingress.kubernetes.io/certificate-arn: "${CERT_ARN}"
-              alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
-              external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
-          spec:
+                kubernetes.io/ingress.class: "alb"
+                alb.ingress.kubernetes.io/scheme: internet-facing
+                alb.ingress.kubernetes.io/target-type: ip
+                alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+                alb.ingress.kubernetes.io/ssl-redirect: '443'
+                alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+                external-dns.alpha.kubernetes.io/hostname: "talk2me-gen-z.com,api.talk2me-gen-z.com"
+                alb.ingress.kubernetes.io/healthcheck-path: "/"
+                alb.ingress.kubernetes.io/success-codes: "200,302"
+                alb.ingress.kubernetes.io/group.name: "talk2me"
+            spec:
             rules:
-            - host: talk2me-gen-z.com
-              http:
+            - host: talk2me-gen-z.com  # Main domain for frontend
+                http:
                 paths:
                 - path: /
-                  pathType: Prefix
-                  backend:
+                    pathType: Prefix
+                    backend:
                     service:
-                      name: talk2me-frontend
-                      port:
+                        name: talk2me-frontend
+                        port:
                         number: 80
-            - host: api.talk2me-gen-z.com
-              http:
+            - host: api.talk2me-gen-z.com  # Subdomain for API
+                http:
                 paths:
                 - path: /
-                  pathType: Prefix
-                  backend:
+                    pathType: Prefix
+                    backend:
                     service:
-                      name: talk2me-backend
-                      port:
+                        name: talk2me-backend
+                        port:
                         number: 80
           EOF
           fi
