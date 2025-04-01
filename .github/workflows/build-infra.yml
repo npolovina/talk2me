@@ -113,110 +113,164 @@ jobs:
             echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
             echo "region=$REGION" >> $GITHUB_OUTPUT
 
+      # Create IAM role for GitHub Actions
       - name: Set up GitHub permissions for EKS
         id: set-up-github-permissions
         run: |
-          CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
-          REGION="${{ github.event.inputs.region || 'us-east-1' }}"
-          
-          echo "Setting up GitHub OIDC provider and IAM roles..."
-          
-          # Get AWS account ID
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
-          
-          # Create GitHub OIDC provider if not exists
-          GITHUB_OIDC_PROVIDER_ARN=$(aws iam list-open-id-connect-providers | jq -r '.OpenIDConnectProviderList[] | select(.Arn | contains("token.actions.githubusercontent.com")) | .Arn')
-          
-          if [ -z "$GITHUB_OIDC_PROVIDER_ARN" ]; then
-            echo "Creating GitHub OIDC provider..."
-            THUMBPRINT="6938fd4d98bab03faadb97b34396831e3780aea1"
+            CLUSTER_NAME="${{ github.event.inputs.cluster_name || 'talk2me-cluster' }}"
+            REGION="${{ github.event.inputs.region || 'us-east-1' }}"
             
-            GITHUB_OIDC_PROVIDER_ARN=$(aws iam create-open-id-connect-provider \
-              --url "https://token.actions.githubusercontent.com" \
-              --client-id-list "sts.amazonaws.com" \
-              --thumbprint-list "$THUMBPRINT" \
-              --query "OpenIDConnectProviderArn" --output text)
-          else
-            echo "GitHub OIDC provider already exists: $GITHUB_OIDC_PROVIDER_ARN"
-          fi
-          
-          # Create IAM role for GitHub Actions
-          ROLE_NAME="github-actions-talk2me-role"
-          GITHUB_ORG="${{ github.repository_owner }}"
-          GITHUB_REPO="talk2me"
-          
-          # Create trust policy
-          cat > trust-policy.json << EOF
-          {
-              "Version": "2012-10-17",
-              "Statement": [
-                  {
-                      "Effect": "Allow",
-                      "Principal": {
-                          "Federated": "${GITHUB_OIDC_PROVIDER_ARN}"
-                      },
-                      "Action": "sts:AssumeRoleWithWebIdentity",
-                      "Condition": {
-                          "StringEquals": {
-                              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-                          },
-                          "StringLike": {
-                              "token.actions.githubusercontent.com:sub": "repo:${GITHUB_ORG}/${GITHUB_REPO}:*"
-                          }
-                      }
-                  }
-              ]
-          }
-          EOF
-          
-          # Check if role exists, create or update
-          if aws iam get-role --role-name "${ROLE_NAME}" &> /dev/null; then
-            echo "Updating existing IAM role: ${ROLE_NAME}"
-            aws iam update-assume-role-policy --role-name "${ROLE_NAME}" --policy-document file://trust-policy.json
-          else
-            echo "Creating new IAM role: ${ROLE_NAME}"
-            aws iam create-role --role-name "${ROLE_NAME}" \
-              --assume-role-policy-document file://trust-policy.json \
-              --description "Role for GitHub Actions to access AWS resources"
-          fi
-          
-          ROLE_ARN=$(aws iam get-role --role-name "${ROLE_NAME}" --query "Role.Arn" --output text)
-          echo "Role ARN: ${ROLE_ARN}"
-          
-          # Attach necessary policies
-          aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-          aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonContainerRegistryPublicFullAccess"
-          
-          # Update EKS aws-auth ConfigMap
-          echo "Updating aws-auth ConfigMap..."
-          eksctl create iamidentitymapping \
-            --cluster "${CLUSTER_NAME}" \
-            --region "${REGION}" \
-            --arn "${ROLE_ARN}" \
-            --username "github-actions-talk2me-role" \
-            --group "system:masters"
-          
-          echo "GitHub permissions for EKS set up successfully"
-          
-          # Save role ARN for future workflows
-          echo "role_arn=${ROLE_ARN}" >> $GITHUB_OUTPUT
-
-      - name: Create ECR repositories
-        run: |
-          echo "Creating ECR repositories..."
-          
-          # Check if repositories exist, create if needed
-          if ! aws ecr describe-repositories --repository-names talk2me-backend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
-            echo "Creating backend ECR repository..."
-            aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true
-          fi
-          
-          if ! aws ecr describe-repositories --repository-names talk2me-frontend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
-            echo "Creating frontend ECR repository..."
-            aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true
-          fi
-          
-          echo "ECR repositories created/verified"
+            echo "Setting up GitHub OIDC provider and IAM roles..."
+            
+            # Get AWS account ID
+            AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+            
+            # Create GitHub OIDC provider if not exists
+            GITHUB_OIDC_PROVIDER_ARN=$(aws iam list-open-id-connect-providers | jq -r '.OpenIDConnectProviderList[] | select(.Arn | contains("token.actions.githubusercontent.com")) | .Arn')
+            
+            if [ -z "$GITHUB_OIDC_PROVIDER_ARN" ]; then
+                echo "Creating GitHub OIDC provider..."
+                THUMBPRINT="6938fd4d98bab03faadb97b34396831e3780aea1"
+                
+                GITHUB_OIDC_PROVIDER_ARN=$(aws iam create-open-id-connect-provider \
+                --url "https://token.actions.githubusercontent.com" \
+                --client-id-list "sts.amazonaws.com" \
+                --thumbprint-list "$THUMBPRINT" \
+                --query "OpenIDConnectProviderArn" --output text)
+            else
+                echo "GitHub OIDC provider already exists: $GITHUB_OIDC_PROVIDER_ARN"
+            fi
+            
+            # Create IAM role for GitHub Actions
+            ROLE_NAME="github-actions-talk2me-role"
+            GITHUB_ORG="npolovina"
+            GITHUB_REPO="talk2me"
+            
+            # Create trust policy
+            cat > trust-policy.json << EOF
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Federated": "${GITHUB_OIDC_PROVIDER_ARN}"
+                        },
+                        "Action": "sts:AssumeRoleWithWebIdentity",
+                        "Condition": {
+                            "StringEquals": {
+                                "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                            },
+                            "StringLike": {
+                                "token.actions.githubusercontent.com:sub": "repo:${GITHUB_ORG}/${GITHUB_REPO}:*"
+                            }
+                        }
+                    }
+                ]
+            }
+            EOF
+                
+            # Check if role exists, create or update
+            if aws iam get-role --role-name "${ROLE_NAME}" &> /dev/null; then
+                echo "Updating existing IAM role: ${ROLE_NAME}"
+                aws iam update-assume-role-policy --role-name "${ROLE_NAME}" --policy-document file://trust-policy.json
+            else
+                echo "Creating new IAM role: ${ROLE_NAME}"
+                aws iam create-role --role-name "${ROLE_NAME}" \
+                --assume-role-policy-document file://trust-policy.json \
+                --description "Role for GitHub Actions to access AWS resources"
+            fi
+            
+            # Create custom ECR policy
+            cat > ecr-policy.json << EOF
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "ecr:GetDownloadUrlForLayer",
+                            "ecr:BatchGetImage",
+                            "ecr:BatchCheckLayerAvailability",
+                            "ecr:PutImage",
+                            "ecr:InitiateLayerUpload",
+                            "ecr:UploadLayerPart",
+                            "ecr:CompleteLayerUpload",
+                            "ecr:DescribeRepositories",
+                            "ecr:CreateRepository",
+                            "ecr:ListImages",
+                            "ecr:DeleteRepository",
+                            "ecr:SetRepositoryPolicy",
+                            "ecr:GetRepositoryPolicy"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "ecr:GetAuthorizationToken"
+                        ],
+                        "Resource": "*"
+                    }
+                ]
+            }
+            EOF
+            
+            # Check if policy already exists
+            EXISTING_POLICY_ARN=$(aws iam list-policies --query "Policies[?PolicyName=='GitHub-Actions-ECR-Access'].Arn" --output text)
+            
+            if [ -z "$EXISTING_POLICY_ARN" ]; then
+                echo "Creating new ECR policy..."
+                CUSTOM_ECR_POLICY_ARN=$(aws iam create-policy \
+                --policy-name "GitHub-Actions-ECR-Access" \
+                --policy-document file://ecr-policy.json \
+                --query 'Policy.Arn' \
+                --output text)
+            else
+                echo "Updating existing ECR policy..."
+                aws iam create-policy-version \
+                --policy-arn "$EXISTING_POLICY_ARN" \
+                --policy-document file://ecr-policy.json \
+                --set-as-default
+                CUSTOM_ECR_POLICY_ARN="$EXISTING_POLICY_ARN"
+            fi
+            
+            ROLE_ARN=$(aws iam get-role --role-name "${ROLE_NAME}" --query "Role.Arn" --output text)
+            echo "Role ARN: ${ROLE_ARN}"
+            
+            # Attach necessary policies
+            aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+            aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${CUSTOM_ECR_POLICY_ARN}"
+            
+            # Update EKS aws-auth ConfigMap
+            echo "Updating aws-auth ConfigMap..."
+            eksctl create iamidentitymapping \
+                --cluster "${CLUSTER_NAME}" \
+                --region "${REGION}" \
+                --arn "${ROLE_ARN}" \
+                --username "github-actions-talk2me-role" \
+                --group "system:masters"
+            
+            echo "GitHub permissions for EKS set up successfully"
+            
+            # Save role ARN for future workflows
+            echo "role_arn=${ROLE_ARN}" >> $GITHUB_OUTPUT
+                - name: Create ECR repositories
+                    run: |
+                    echo "Creating ECR repositories..."
+                    
+                    # Check if repositories exist, create if needed
+                    if ! aws ecr describe-repositories --repository-names talk2me-backend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
+                        echo "Creating backend ECR repository..."
+                        aws ecr create-repository --repository-name talk2me-backend --image-scanning-configuration scanOnPush=true
+                    fi
+                    
+                    if ! aws ecr describe-repositories --repository-names talk2me-frontend --region ${{ github.event.inputs.region || 'us-east-1' }} 2>/dev/null; then
+                        echo "Creating frontend ECR repository..."
+                        aws ecr create-repository --repository-name talk2me-frontend --image-scanning-configuration scanOnPush=true
+                    fi
+                    
+                    echo "ECR repositories created/verified"
 
       - name: Set up DNS and SSL certificates
         if: ${{ github.event.inputs.skip_dns_setup != 'true' }}
