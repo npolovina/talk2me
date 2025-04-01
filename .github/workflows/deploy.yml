@@ -118,27 +118,7 @@ jobs:
           # Verify namespace exists with ignore-not-found flag
           echo "Verifying namespace existence..."
           kubectl get namespace talk2me --ignore-not-found || echo "Namespace verification failed, but continuing..."
-      # Update Kubernetes secrets with validation disabled
-      - name: Update Kubernetes secrets
-        run: |
-          echo "Creating Kubernetes secret..."
-          DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
-          
-          # Create secret configuration
-          cat << EOF > ./secret.yaml
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: talk2me-secrets
-            namespace: talk2me
-          type: Opaque
-          data:
-            deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
-          EOF
-          
-          # Apply the secret with validation disabled
-          kubectl apply --validate=false -f ./secret.yaml
-          rm ./secret.yaml
+
       # Process and apply Kubernetes manifests with validation disabled
       - name: Deploy to EKS
         run: |
