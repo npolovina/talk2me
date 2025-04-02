@@ -18,11 +18,15 @@ on:
       node_instance_type:
         description: 'EC2 Instance Type for Nodes'
         required: true
-        default: 't3.large'
+        default: 't3.medium'
       kubernetes_version:
         description: 'Kubernetes Version'
         required: true
         default: '1.28'
+      domain_name:
+        description: 'Domain Name for the application'
+        required: true
+        default: 'talk2me-gen-z.com'
       enable_autoscaler:
         description: 'Enable Cluster Autoscaler'
         required: false
@@ -32,713 +36,440 @@ on:
 env:
   AWS_REGION: ${{ github.event.inputs.region }}
   CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  DOMAIN_NAME: ${{ github.event.inputs.domain_name }}
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-# JOB 1: Check prerequisites and set up common resources
- prerequisites:
-  name: Check Prerequisites & Setup
-  runs-on: ubuntu-latest
-  outputs:
-    cluster_exists: ${{ steps.check-cluster.outputs.cluster_exists }}
-    aws_account_id: ${{ steps.get-aws-account.outputs.aws_account_id }}
-  
-  steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+  eks-setup:
+    name: Create EKS Cluster and Configure Add-ons
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
       
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Get AWS Account ID
-      id: get-aws-account
-      run: |
-        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        echo "aws_account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
-    
-    - name: Install eksctl
-      run: |
-        curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-        sudo mv /tmp/eksctl /usr/local/bin
-        eksctl version
-    
-    - name: Check if EKS Cluster Exists
-      id: check-cluster
-      run: |
-        echo "Checking if cluster $CLUSTER_NAME already exists..."
-        
-        if aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION &> /dev/null; then
-          echo "Cluster $CLUSTER_NAME already exists"
-          echo "cluster_exists=true" >> $GITHUB_OUTPUT
-        else
-          echo "Cluster $CLUSTER_NAME does not exist yet"
-          echo "cluster_exists=false" >> $GITHUB_OUTPUT
-        fi
-
-# JOB 2: Create EKS cluster if it doesn't exist
- create-cluster:
-  name: Create EKS Cluster
-  needs: prerequisites
-  if: needs.prerequisites.outputs.cluster_exists == 'false'
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Create EKS cluster
-      run: |
-        # Parse node group size parameters
-        IFS=',' read -ra SIZES <<< "${{ github.event.inputs.node_group_size }}"
-        MIN_SIZE=${SIZES[0]}
-        DESIRED_SIZE=${SIZES[1]}
-        MAX_SIZE=${SIZES[2]}
-        
-        echo "Creating EKS cluster $CLUSTER_NAME in $AWS_REGION..."
-        # Added --node-volume-size parameter to ensure nodes have enough disk space
-        eksctl create cluster \
-          --name $CLUSTER_NAME \
-          --region $AWS_REGION \
-          --version ${{ github.event.inputs.kubernetes_version }} \
-          --nodegroup-name standard-nodes \
-          --node-type ${{ github.event.inputs.node_instance_type }} \
-          --nodes-min $MIN_SIZE \
-          --nodes $DESIRED_SIZE \
-          --nodes-max $MAX_SIZE \
-          --node-volume-size 50 \
-          --with-oidc \
-          --managed \
-          --asg-access
-        
-        # Verify cluster creation
-        if [ $? -ne 0 ]; then
-          echo "EKS cluster creation failed. Exiting."
-          exit 1
-        fi
-
-# JOB 3: Setup kubeconfig
- setup-kubeconfig:
-  name: Setup Kubeconfig
-  needs: [prerequisites, create-cluster]
-  if: always() && (needs.prerequisites.outputs.cluster_exists == 'true' || needs.create-cluster.result == 'success')
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Update kubeconfig
-      run: |
-        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-        
-        # Verify kubeconfig works
-        if ! kubectl cluster-info; then
-          echo "Failed to connect to cluster. Creating manual kubeconfig..."
-          CLUSTER_ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.endpoint" --output text)
-          CA_DATA=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.certificateAuthority.data" --output text)
+      - name: Get AWS Account ID
+        id: get-aws-account
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+      
+      - name: Install eksctl
+        run: |
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+      
+      - name: Check if EKS Cluster Exists
+        id: check-cluster
+        run: |
+          echo "Checking if cluster $CLUSTER_NAME already exists..."
           
-          mkdir -p ~/.kube
-          
-          # Create kubeconfig step by step
-          echo "apiVersion: v1" > ~/.kube/config
-          echo "clusters:" >> ~/.kube/config
-          echo "- cluster:" >> ~/.kube/config
-          echo "    certificate-authority-data: ${CA_DATA}" >> ~/.kube/config
-          echo "    server: ${CLUSTER_ENDPOINT}" >> ~/.kube/config
-          echo "  name: ${CLUSTER_NAME}" >> ~/.kube/config
-          echo "contexts:" >> ~/.kube/config
-          echo "- context:" >> ~/.kube/config
-          echo "    cluster: ${CLUSTER_NAME}" >> ~/.kube/config
-          echo "    user: ${CLUSTER_NAME}" >> ~/.kube/config
-          echo "  name: ${CLUSTER_NAME}" >> ~/.kube/config
-          echo "current-context: ${CLUSTER_NAME}" >> ~/.kube/config
-          echo "kind: Config" >> ~/.kube/config
-          echo "preferences: {}" >> ~/.kube/config
-          echo "users:" >> ~/.kube/config
-          echo "- name: ${CLUSTER_NAME}" >> ~/.kube/config
-          echo "  user:" >> ~/.kube/config
-          echo "    exec:" >> ~/.kube/config
-          echo "      apiVersion: client.authentication.k8s.io/v1beta1" >> ~/.kube/config
-          echo "      command: aws" >> ~/.kube/config
-          echo "      args:" >> ~/.kube/config
-          echo "      - eks" >> ~/.kube/config
-          echo "      - get-token" >> ~/.kube/config
-          echo "      - --cluster-name" >> ~/.kube/config
-          echo "      - ${CLUSTER_NAME}" >> ~/.kube/config
-          echo "      - --region" >> ~/.kube/config
-          echo "      - ${AWS_REGION}" >> ~/.kube/config
-          
-          # Verify again
-          if ! kubectl cluster-info; then
-            echo "Still unable to connect to cluster. Exiting."
-            exit 1
-          fi
-        fi
-
-# JOB 4: Update EKS add-ons
- update-addons:
-  name: Update EKS Add-ons
-  needs: setup-kubeconfig
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
-    - name: Update EKS add-ons
-      run: |
-        echo "Updating all EKS add-ons to compatible versions..."
-        
-        # Define the add-ons to ensure are properly configured
-        ADDONS=("coredns" "kube-proxy" "vpc-cni" "aws-ebs-csi-driver")
-        
-        for ADDON in "${ADDONS[@]}"; do
-          echo "Processing add-on: $ADDON"
-          
-          # Get latest compatible version for the add-on
-          LATEST_VERSION=$(aws eks describe-addon-versions \
-            --addon-name $ADDON \
-            --kubernetes-version ${{ github.event.inputs.kubernetes_version }} \
-            --query "addons[].addonVersions[0].addonVersion" \
-            --output text)
-            
-          if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "None" ]; then
-            echo "No version found for $ADDON, skipping..."
-            continue
-          fi
-          
-          echo "Latest compatible $ADDON version: $LATEST_VERSION"
-          
-          # Check if add-on is already installed
-          ADDON_STATUS=$(aws eks describe-addon \
-            --cluster-name $CLUSTER_NAME \
-            --addon-name $ADDON \
-            --query "addon.status" \
-            --output text 2>/dev/null || echo "NOT_FOUND")
-          
-          if [ "$ADDON_STATUS" == "NOT_FOUND" ]; then
-            echo "Creating $ADDON add-on with version $LATEST_VERSION"
-            RETRY_COUNT=0
-            MAX_RETRIES=3
-            
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              if aws eks create-addon \
-                --cluster-name $CLUSTER_NAME \
-                --addon-name $ADDON \
-                --addon-version $LATEST_VERSION; then
-                echo "$ADDON add-on created successfully"
-                break
-              else
-                RETRY_COUNT=$((RETRY_COUNT+1))
-                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                  echo "Retrying $ADDON add-on creation (attempt $RETRY_COUNT of $MAX_RETRIES)..."
-                  sleep 10
-                else
-                  echo "WARNING: Failed to create $ADDON add-on after $MAX_RETRIES attempts. Continuing..."
-                fi
-              fi
-            done
+          if aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION &> /dev/null; then
+            echo "Cluster $CLUSTER_NAME already exists"
+            echo "CLUSTER_EXISTS=true" >> $GITHUB_ENV
           else
-            echo "Updating $ADDON add-on to version $LATEST_VERSION"
-            RETRY_COUNT=0
-            MAX_RETRIES=3
-            
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              if aws eks update-addon \
-                --cluster-name $CLUSTER_NAME \
-                --addon-name $ADDON \
-                --addon-version $LATEST_VERSION \
-                --resolve-conflicts PRESERVE; then
-                echo "$ADDON add-on updated successfully"
-                break
-              else
-                RETRY_COUNT=$((RETRY_COUNT+1))
-                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                  echo "Retrying $ADDON add-on update (attempt $RETRY_COUNT of $MAX_RETRIES)..."
-                  sleep 10
-                else
-                  echo "WARNING: Failed to update $ADDON add-on after $MAX_RETRIES attempts. Continuing..."
-                fi
-              fi
-            done
+            echo "Cluster $CLUSTER_NAME does not exist yet"
+            echo "CLUSTER_EXISTS=false" >> $GITHUB_ENV
           fi
+      
+      - name: Create EKS cluster if it doesn't exist
+        if: env.CLUSTER_EXISTS == 'false'
+        run: |
+          # Parse node group size parameters
+          IFS=',' read -ra SIZES <<< "${{ github.event.inputs.node_group_size }}"
+          MIN_SIZE=${SIZES[0]}
+          DESIRED_SIZE=${SIZES[1]}
+          MAX_SIZE=${SIZES[2]}
           
-          # Wait for add-on to be active
-          echo "Waiting for $ADDON add-on to become active..."
-          for i in {1..12}; do
-            CURRENT_STATUS=$(aws eks describe-addon \
+          echo "Creating EKS cluster $CLUSTER_NAME in $AWS_REGION..."
+          eksctl create cluster \
+            --name $CLUSTER_NAME \
+            --region $AWS_REGION \
+            --version ${{ github.event.inputs.kubernetes_version }} \
+            --nodegroup-name standard-nodes \
+            --node-type ${{ github.event.inputs.node_instance_type }} \
+            --nodes-min $MIN_SIZE \
+            --nodes $DESIRED_SIZE \
+            --nodes-max $MAX_SIZE \
+            --with-oidc \
+            --managed \
+            --asg-access
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Update EKS add-ons
+        run: |
+          echo "Updating all EKS add-ons to compatible versions..."
+          
+          # Define the add-ons to ensure are properly configured
+          ADDONS=("coredns" "kube-proxy" "vpc-cni" "aws-ebs-csi-driver")
+          
+          for ADDON in "${ADDONS[@]}"; do
+            echo "Processing add-on: $ADDON"
+            
+            # Get latest compatible version for the add-on
+            LATEST_VERSION=$(aws eks describe-addon-versions \
+              --addon-name $ADDON \
+              --kubernetes-version ${{ github.event.inputs.kubernetes_version }} \
+              --query "addons[].addonVersions[0].addonVersion" \
+              --output text)
+              
+            if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "None" ]; then
+              echo "No version found for $ADDON, skipping..."
+              continue
+            fi
+            
+            echo "Latest compatible $ADDON version: $LATEST_VERSION"
+            
+            # Check if add-on is already installed
+            ADDON_STATUS=$(aws eks describe-addon \
               --cluster-name $CLUSTER_NAME \
               --addon-name $ADDON \
               --query "addon.status" \
               --output text 2>/dev/null || echo "NOT_FOUND")
             
-            if [ "$CURRENT_STATUS" == "ACTIVE" ]; then
-              echo "$ADDON add-on is now active"
-              break
-            elif [ $i -eq 12 ]; then
-              echo "WARNING: $ADDON add-on is not active after 2 minutes (status: $CURRENT_STATUS). Continuing..."
+            if [ "$ADDON_STATUS" == "NOT_FOUND" ]; then
+              echo "Creating $ADDON add-on with version $LATEST_VERSION"
+              aws eks create-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name $ADDON \
+                --addon-version $LATEST_VERSION
             else
-              echo "$ADDON add-on status: $CURRENT_STATUS. Checking again in 10 seconds..."
-              sleep 10
+              echo "Updating $ADDON add-on to version $LATEST_VERSION"
+              aws eks update-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name $ADDON \
+                --addon-version $LATEST_VERSION \
+                --resolve-conflicts PRESERVE
             fi
           done
-        done
-        
-        echo "All add-ons have been configured"
+          
+          echo "All add-ons have been configured"
+      
+      - name: Tag subnets for Load Balancer Controller
+        run: |
+          echo "Tagging subnets for AWS Load Balancer Controller..."
+          
+          # Get VPC ID used by the EKS cluster
+          VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.resourcesVpcConfig.vpcId" --output text)
+          echo "EKS Cluster VPC ID: $VPC_ID"
+          
+          # Get all subnets in the VPC
+          SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[].SubnetId" --output text)
+          
+          # Identify public subnets (those with route to internet gateway)
+          for SUBNET_ID in $SUBNET_IDS; do
+            # Check if this subnet's route table has an internet gateway route
+            RT_ID=$(aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$SUBNET_ID" --query "RouteTables[0].RouteTableId" --output text)
+            
+            if [ -z "$RT_ID" ] || [ "$RT_ID" == "None" ]; then
+              # If there's no explicit association, get the main route table for the VPC
+              RT_ID=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" --query "RouteTables[0].RouteTableId" --output text)
+            fi
+            
+            # Check if this route table has an internet gateway route
+            IGW_ROUTE=$(aws ec2 describe-route-tables --route-table-ids $RT_ID --query "RouteTables[0].Routes[?GatewayId!=null] | [?starts_with(GatewayId, 'igw-')].DestinationCidrBlock" --output text)
+            
+            if [ -n "$IGW_ROUTE" ]; then
+              # This subnet has a route to an internet gateway - it's public
+              echo "Tagging public subnet $SUBNET_ID with kubernetes.io/role/elb=1"
+              aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/elb,Value=1
+            else
+              # This subnet doesn't have a route to an internet gateway - it's private
+              echo "Tagging private subnet $SUBNET_ID with kubernetes.io/role/internal-elb=1"
+              aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/internal-elb,Value=1
+            fi
+          done
+      
+      - name: Create ECR Repositories
+        run: |
+          # Create Backend ECR Repository if it doesn't exist
+          aws ecr describe-repositories --repository-names talk2me-backend || \
+          aws ecr create-repository --repository-name talk2me-backend
+          
+          # Create Frontend ECR Repository if it doesn't exist
+          aws ecr describe-repositories --repository-names talk2me-frontend || \
+          aws ecr create-repository --repository-name talk2me-frontend
+          
+          echo "ECR repositories created or verified"
+            
+      - name: Install AWS Load Balancer Controller
+        run: |
+          # Create IAM policy for AWS Load Balancer Controller
+          curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.5.2/docs/install/iam_policy.json
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name AWSLoadBalancerControllerIAMPolicy \
+            --policy-document file://iam_policy.json || echo "Policy may already exist - continuing"
 
-# JOB 5: Tag subnets for Load Balancer Controller
- tag-subnets:
-  name: Tag Subnets for Load Balancer
-  needs: setup-kubeconfig
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
-    - name: Tag subnets for Load Balancer Controller
-      run: |
-        echo "Tagging subnets for AWS Load Balancer Controller..."
-        
-        # Get VPC ID used by the EKS cluster
-        VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.resourcesVpcConfig.vpcId" --output text)
-        echo "EKS Cluster VPC ID: $VPC_ID"
-        
-        # Get all subnets in the VPC
-        SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[].SubnetId" --output text)
-        
-        # Identify public subnets (those with route to internet gateway)
-        for SUBNET_ID in $SUBNET_IDS; do
-          # Check if this subnet's route table has an internet gateway route
-          RT_ID=$(aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$SUBNET_ID" --query "RouteTables[0].RouteTableId" --output text)
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=arn:aws:iam::$AWS_ACCOUNT_ID:policy/AWSLoadBalancerControllerIAMPolicy \
+            --override-existing-serviceaccounts \
+            --approve
           
-          if [ -z "$RT_ID" ] || [ "$RT_ID" == "None" ]; then
-            # If there's no explicit association, get the main route table for the VPC
-            RT_ID=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" --query "RouteTables[0].RouteTableId" --output text)
-          fi
+          # Install Helm
+          curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
           
-          # Check if this route table has an internet gateway route
-          IGW_ROUTE=$(aws ec2 describe-route-tables --route-table-ids $RT_ID --query "RouteTables[0].Routes[?GatewayId!=null] | [?starts_with(GatewayId, 'igw-')].DestinationCidrBlock" --output text)
+          # Add Helm repository
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
           
-          if [ -n "$IGW_ROUTE" ]; then
-            # This subnet has a route to an internet gateway - it's public
-            echo "Tagging public subnet $SUBNET_ID with kubernetes.io/role/elb=1"
-            aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/elb,Value=1
+          # Install AWS Load Balancer Controller
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --set clusterName=$CLUSTER_NAME \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=$AWS_REGION \
+            -n kube-system || \
+          helm upgrade aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --set clusterName=$CLUSTER_NAME \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=$AWS_REGION \
+            -n kube-system
+          
+          # Wait for controller to be ready
+          echo "Waiting for AWS Load Balancer Controller to be ready..."
+          kubectl rollout status deployment aws-load-balancer-controller -n kube-system --timeout=180s
+      
+      - name: Setup External DNS (for Route53)
+        run: |
+          # Create IAM policy for External DNS
+          cat > external-dns-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "route53:ChangeResourceRecordSets"
+                ],
+                "Resource": [
+                  "arn:aws:route53:::hostedzone/*"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "route53:ListHostedZones",
+                  "route53:ListResourceRecordSets"
+                ],
+                "Resource": [
+                  "*"
+                ]
+              }
+            ]
+          }
+          EOF
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name ExternalDNSPolicy \
+            --policy-document file://external-dns-policy.json || echo "Policy may already exist - continuing"
+          
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=external-dns \
+            --attach-policy-arn=arn:aws:iam::$AWS_ACCOUNT_ID:policy/ExternalDNSPolicy \
+            --override-existing-serviceaccounts \
+            --approve
+            
+          # Install External DNS
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+          
+          helm install external-dns bitnami/external-dns \
+            --set provider=aws \
+            --set aws.region=$AWS_REGION \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=external-dns \
+            --namespace kube-system || \
+          helm upgrade external-dns bitnami/external-dns \
+            --set provider=aws \
+            --set aws.region=$AWS_REGION \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=external-dns \
+            --namespace kube-system
+      
+      - name: Check for Route53 Hosted Zone
+        id: check-hosted-zone
+        run: |
+          echo "Checking if Route53 hosted zone exists for $DOMAIN_NAME..."
+          
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN_NAME --query "HostedZones[?Name=='$DOMAIN_NAME.'].Id" --output text | cut -d/ -f3)
+          
+          if [ -n "$ZONE_ID" ]; then
+            echo "Hosted zone exists with ID: $ZONE_ID"
+            echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+            echo "HOSTED_ZONE_EXISTS=true" >> $GITHUB_ENV
           else
-            # This subnet doesn't have a route to an internet gateway - it's private
-            echo "Tagging private subnet $SUBNET_ID with kubernetes.io/role/internal-elb=1"
-            aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/internal-elb,Value=1
+            echo "Hosted zone does not exist, will create it in deployment workflow"
+            echo "HOSTED_ZONE_EXISTS=false" >> $GITHUB_ENV
           fi
-        done
-        
-        # Verify tags were applied
-        echo "Verifying subnet tags..."
-        for SUBNET_ID in $SUBNET_IDS; do
-          TAGS=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$SUBNET_ID" "Name=key,Values=kubernetes.io/role/elb,kubernetes.io/role/internal-elb" --query "Tags[].Key" --output text)
-          if [ -n "$TAGS" ]; then
-            echo "Subnet $SUBNET_ID tagged successfully: $TAGS"
-          else
-            echo "WARNING: Subnet $SUBNET_ID may not be tagged properly."
-          fi
-        done
-
-# JOB 6: Install AWS Load Balancer Controller
- install-load-balancer:
-  name: Install AWS Load Balancer Controller
-  needs: [prerequisites, tag-subnets]
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
-    - name: Setup kubectl
-      run: |
-        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-        
-    - name: Install AWS Load Balancer Controller
-      run: |
-        # Create IAM policy for AWS Load Balancer Controller
-        curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.5.2/docs/install/iam_policy.json
-        
-        # Create the policy
-        aws iam create-policy \
-          --policy-name AWSLoadBalancerControllerIAMPolicy \
-          --policy-document file://iam_policy.json || echo "Policy may already exist - continuing"
-
-        # Create Service Account
-        eksctl create iamserviceaccount \
-          --cluster=$CLUSTER_NAME \
-          --namespace=kube-system \
-          --name=aws-load-balancer-controller \
-          --attach-policy-arn=arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/AWSLoadBalancerControllerIAMPolicy \
-          --override-existing-serviceaccounts \
-          --approve
-        
-        # Install Helm
-        curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
-        
-        # Add Helm repository
-        helm repo add eks https://aws.github.io/eks-charts
-        helm repo update
-        
-        # Install AWS Load Balancer Controller with specific version and resource limits
-        helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-          --version 1.5.3 \
-          --set clusterName=$CLUSTER_NAME \
-          --set serviceAccount.create=false \
-          --set serviceAccount.name=aws-load-balancer-controller \
-          --set region=$AWS_REGION \
-          --set resources.requests.cpu=100m \
-          --set resources.requests.memory=128Mi \
-          --set resources.limits.cpu=500m \
-          --set resources.limits.memory=256Mi \
-          --set nodeSelector."kubernetes\\.io/os"=linux \
-          -n kube-system || \
-        helm upgrade aws-load-balancer-controller eks/aws-load-balancer-controller \
-          --version 1.5.3 \
-          --set clusterName=$CLUSTER_NAME \
-          --set serviceAccount.create=false \
-          --set serviceAccount.name=aws-load-balancer-controller \
-          --set region=$AWS_REGION \
-          --set resources.requests.cpu=100m \
-          --set resources.requests.memory=128Mi \
-          --set resources.limits.cpu=500m \
-          --set resources.limits.memory=256Mi \
-          --set nodeSelector."kubernetes\\.io/os"=linux \
-          -n kube-system
-        
-        # Wait for controller to be ready with increased timeout
-        echo "Waiting for AWS Load Balancer Controller to be ready..."
-        kubectl rollout status deployment aws-load-balancer-controller -n kube-system --timeout=300s
-        
-        # Verify controller is fully functional
-        echo "Verifying controller functionality..."
-        CONTROLLER_READY=false
-        RETRY_COUNT=0
-        MAX_RETRIES=5
-        
-        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$CONTROLLER_READY" != "true" ]; do
-          # Check for controller pods running
-          RUNNING_PODS=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o jsonpath='{.items[*].status.phase}' | grep -c "Running" || echo "0")
+      
+      - name: Create ACM Certificate if needed
+        id: check-certificate
+        run: |
+          echo "Checking for ACM certificate for $DOMAIN_NAME..."
           
-          # Check for controller logs to confirm it's working properly
-          CONTROLLER_LOGS=$(kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=10 | grep "Reconciling" || echo "")
+          # Try to find certificate for domain in ACM
+          CERT_ARN=$(aws acm list-certificates --query "CertificateSummaryList[?contains(DomainName, '*.${DOMAIN_NAME}') || DomainName=='${DOMAIN_NAME}'].CertificateArn" --output text | head -1)
           
-          if [ "$RUNNING_PODS" -eq "2" ] && [ -n "$CONTROLLER_LOGS" ]; then
-            echo "AWS Load Balancer Controller is fully operational"
-            CONTROLLER_READY=true
+          if [ -n "$CERT_ARN" ]; then
+            echo "Found certificate: $CERT_ARN"
+            echo "CERTIFICATE_ARN=$CERT_ARN" >> $GITHUB_ENV
           else
-            RETRY_COUNT=$((RETRY_COUNT+1))
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-              echo "Controller not fully ready yet, waiting 30 seconds... (Attempt $RETRY_COUNT/$MAX_RETRIES)"
-              sleep 30
+            echo "No certificate found for $DOMAIN_NAME, creating wildcard certificate..."
+            
+            # Create new certificate with wildcard and apex domain
+            NEW_CERT_ARN=$(aws acm request-certificate \
+              --domain-name "$DOMAIN_NAME" \
+              --validation-method DNS \
+              --subject-alternative-names "*.$DOMAIN_NAME" \
+              --query CertificateArn --output text)
+            
+            echo "Created new certificate: $NEW_CERT_ARN"
+            echo "CERTIFICATE_ARN=$NEW_CERT_ARN" >> $GITHUB_ENV
+            
+            # If hosted zone exists, add validation records
+            if [ "$HOSTED_ZONE_EXISTS" == "true" ]; then
+              echo "Adding DNS validation records to Route53..."
+              
+              # Wait a moment for the certificate to be ready
+              sleep 5
+              
+              # Get validation records
+              VALIDATION_RECORDS=$(aws acm describe-certificate \
+                --certificate-arn $NEW_CERT_ARN \
+                --query "Certificate.DomainValidationOptions[].ResourceRecord" \
+                --output json)
+              
+              # Create validation records in Route53
+              echo $VALIDATION_RECORDS | jq -c '.[]' | while read -r record; do
+                NAME=$(echo $record | jq -r '.Name')
+                VALUE=$(echo $record | jq -r '.Value')
+                TYPE=$(echo $record | jq -r '.Type')
+                
+                echo "Adding validation record: $NAME -> $VALUE"
+                
+                aws route53 change-resource-record-sets \
+                  --hosted-zone-id $ZONE_ID \
+                  --change-batch '{
+                    "Changes": [{
+                      "Action": "UPSERT",
+                      "ResourceRecordSet": {
+                        "Name": "'$NAME'",
+                        "Type": "'$TYPE'",
+                        "TTL": 300,
+                        "ResourceRecords": [{"Value": "'$VALUE'"}]
+                      }
+                    }]
+                  }'
+              done
+              
+              echo "DNS validation records added. Certificate validation will take some time to complete."
+            else
+              echo "No hosted zone exists yet. DNS validation records will need to be added later."
             fi
           fi
-        done
-        
-        if [ "$CONTROLLER_READY" != "true" ]; then
-          echo "WARNING: AWS Load Balancer Controller may not be fully operational, but continuing workflow."
-          echo "You may need to check controller status manually after workflow completes."
-          
-          # Print controller pod details and logs for debugging
-          echo "Controller pod status:"
-          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller -o wide
-          
-          echo "Controller pod logs:"
-          kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50
-        fi
-
-# JOB 7: Setup External DNS
- setup-external-dns:
-  name: Setup External DNS
-  needs: [prerequisites, setup-kubeconfig]
-  runs-on: ubuntu-latest
-
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Setup kubectl
-      run: |
-        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-
-    - name: Setup External DNS (for Route53)
-      run: |
-        echo "Setting up External DNS..."
-
-        # Create IAM policy if it doesn't exist
-        POLICY_ARN="arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/ExternalDNSPolicy"
-        aws iam get-policy --policy-arn $POLICY_ARN >/dev/null 2>&1 || \
-        aws iam create-policy \
-          --policy-name ExternalDNSPolicy \
-          --policy-document file://<(cat <<EOF
-        {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Effect": "Allow",
-              "Action": ["route53:ChangeResourceRecordSets"],
-              "Resource": ["arn:aws:route53:::hostedzone/*"]
-            },
-            {
-              "Effect": "Allow",
-              "Action": [
-                "route53:ListHostedZones",
-                "route53:ListResourceRecordSets"
-              ],
-              "Resource": ["*"]
-            }
-          ]
-        }
-        EOF
-        )
-
-        # Create or update the service account
-        eksctl create iamserviceaccount \
-          --cluster=$CLUSTER_NAME \
-          --namespace=kube-system \
-          --name=external-dns \
-          --attach-policy-arn=$POLICY_ARN \
-          --override-existing-serviceaccounts \
-          --approve
-
-        # Install Helm and update repos
-        curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
-        helm repo add bitnami https://charts.bitnami.com/bitnami
-        helm repo update
-
-        # Delete previous release if it exists and rollout failed
-        if helm status external-dns -n kube-system >/dev/null 2>&1; then
-          echo "Helm release 'external-dns' exists. Checking if healthy..."
-          DEPLOYMENT_STATUS=$(kubectl get deployment external-dns -n kube-system -o jsonpath='{.status.conditions[?(@.type=="Progressing")].status}')
-          if [ "$DEPLOYMENT_STATUS" != "True" ]; then
-            echo "Previous deployment unhealthy. Deleting helm release..."
-            helm uninstall external-dns -n kube-system
-            sleep 10
-          fi
-        fi
-
-        # Install or upgrade external-dns
-        helm upgrade --install external-dns bitnami/external-dns \
-          --version 6.20.1 \
-          --namespace kube-system \
-          --set provider=aws \
-          --set aws.region=$AWS_REGION \
-          --set serviceAccount.create=false \
-          --set serviceAccount.name=external-dns \
-          --set resources.requests.cpu=50m \
-          --set resources.requests.memory=64Mi \
-          --set resources.limits.cpu=200m \
-          --set resources.limits.memory=128Mi \
-          --set txtOwnerId=$CLUSTER_NAME
-
-        # Wait for External DNS to be ready
-        echo "Waiting for External DNS to be ready..."
-        if ! kubectl rollout status deployment external-dns -n kube-system --timeout=300s; then
-          echo "ERROR: External DNS rollout failed. Printing diagnostics:"
-          echo "--- Pod status ---"
-          kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns -o wide
-          echo "--- Pod logs ---"
-          kubectl logs -n kube-system -l app.kubernetes.io/name=external-dns --tail=50 || true
-          echo "--- Pod events ---"
-          kubectl describe pods -n kube-system -l app.kubernetes.io/name=external-dns | grep -A15 Events || true
-          echo "⚠️ Continuing workflow despite failure. Manual intervention may be required."
-        fi
-
-# JOB 8: Create Namespace and Secret
- create-namespace-and-secret:
-  name: Create Namespace and Secret
-  needs: setup-kubeconfig
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
-    - name: Setup kubectl
-      run: |
-        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-        
-    - name: Create Kubernetes Namespace for Talk2Me
-      run: |
-        # Create namespace if it doesn't exist
-        kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
-        
-    - name: Create Secret for DeepSeek API Key
-      run: |
-        kubectl create secret generic talk2me-secrets \
-          --namespace talk2me \
-          --from-literal=deepseek-api-key=${{ secrets.DEEPSEEK_API_KEY }} \
-          --dry-run=client -o yaml | kubectl apply -f -
-
-# JOB 9: Configure Cluster Autoscaler (when requested)
- configure-autoscaler:
-  name: Configure Cluster Autoscaler
-  needs: [prerequisites, setup-kubeconfig]
-  if: github.event.inputs.enable_autoscaler == 'true'
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
-    - name: Setup kubectl
-      run: |
-        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-        
-    - name: Configure Cluster Autoscaler
-      run: |
-        echo "Setting up Cluster Autoscaler..."
-        
-        # Create IAM policy for Cluster Autoscaler
-        cat > cluster-autoscaler-policy.json << 'EOF'
-        {
-          "Version": "2012-10-17",
-          "Statement": [
-            {
-              "Effect": "Allow",
-              "Action": [
-                "autoscaling:DescribeAutoScalingGroups",
-                "autoscaling:DescribeAutoScalingInstances",
-                "autoscaling:DescribeLaunchConfigurations",
-                "autoscaling:DescribeTags",
-                "autoscaling:SetDesiredCapacity",
-                "autoscaling:TerminateInstanceInAutoScalingGroup",
-                "ec2:DescribeLaunchTemplateVersions"
-              ],
-              "Resource": ["*"]
-            }
-          ]
-        }
-        EOF
-        
-        # Create the policy
-        aws iam create-policy \
-          --policy-name ClusterAutoscalerPolicy \
-          --policy-document file://cluster-autoscaler-policy.json || echo "Policy may already exist - continuing"
-        
-        # Create Service Account
-        eksctl create iamserviceaccount \
-          --cluster=$CLUSTER_NAME \
-          --namespace=kube-system \
-          --name=cluster-autoscaler \
-          --attach-policy-arn=arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/ClusterAutoscalerPolicy \
-          --override-existing-serviceaccounts \
-          --approve
-          
-        # Install Cluster Autoscaler with specific version and resource limits
-        helm repo add autoscaler https://kubernetes.github.io/autoscaler
-        helm repo update
-        
-        helm install cluster-autoscaler autoscaler/cluster-autoscaler \
-          --version 9.29.0 \
-          --set autoDiscovery.clusterName=$CLUSTER_NAME \
-          --set awsRegion=$AWS_REGION \
-          --set rbac.serviceAccount.create=false \
-          --set rbac.serviceAccount.name=cluster-autoscaler \
-          --set resources.requests.cpu=100m \
-          --set resources.requests.memory=300Mi \
-          --set resources.limits.cpu=200m \
-          --set resources.limits.memory=500Mi \
-          --namespace kube-system || \
-        helm upgrade cluster-autoscaler autoscaler/cluster-autoscaler \
-          --version 9.29.0 \
-          --set autoDiscovery.clusterName=$CLUSTER_NAME \
-          --set awsRegion=$AWS_REGION \
-          --set rbac.serviceAccount.create=false \
-          --set rbac.serviceAccount.name=cluster-autoscaler \
-          --set resources.requests.cpu=100m \
-          --set resources.requests.memory=300Mi \
-          --set resources.limits.cpu=200m \
-          --set resources.limits.memory=500Mi \
-          --namespace kube-system
-          
-        # Verify Cluster Autoscaler deployment
-        echo "Waiting for Cluster Autoscaler to be ready..."
-        kubectl rollout status deployment cluster-autoscaler -n kube-system --timeout=300s || {
-          echo "Cluster Autoscaler rollout timed out, checking status..."
-          echo "Pod status:"
-          kubectl get pods -n kube-system -l app.kubernetes.io/name=cluster-autoscaler -o wide
-          echo "Pod logs:"
-          kubectl logs -n kube-system -l app.kubernetes.io/name=cluster-autoscaler --tail=50
-          echo "Continuing workflow despite timeout - manual verification required later"
-        }
- # JOB 10: Verify Cluster Status
- verify-cluster:
-   name: Verify Cluster Status
-   needs: [
-    setup-kubeconfig, 
-    update-addons, 
-    install-load-balancer, 
-    setup-external-dns, 
-    create-namespace-and-secret
-   ]
-   # Also wait for autoscaler if it was requested
-   if: always() && (needs.setup-kubeconfig.result == 'success')
-   runs-on: ubuntu-latest
-   steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-          
-      - name: Setup kubectl
+      
+      - name: Create Kubernetes Namespace for Talk2Me
         run: |
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          # Create namespace if it doesn't exist
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
           
+      - name: Create Secret for DeepSeek API Key
+        run: |
+          kubectl create secret generic talk2me-secrets \
+            --namespace talk2me \
+            --from-literal=deepseek-api-key=${{ secrets.DEEPSEEK_API_KEY }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+            
+      - name: Configure Cluster Autoscaler (when requested)
+        if: ${{ github.event.inputs.enable_autoscaler == 'true' }}
+        run: |
+          echo "Setting up Cluster Autoscaler..."
+          
+          # Create IAM policy for Cluster Autoscaler
+          cat > cluster-autoscaler-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "autoscaling:DescribeAutoScalingGroups",
+                  "autoscaling:DescribeAutoScalingInstances",
+                  "autoscaling:DescribeLaunchConfigurations",
+                  "autoscaling:DescribeTags",
+                  "autoscaling:SetDesiredCapacity",
+                  "autoscaling:TerminateInstanceInAutoScalingGroup",
+                  "ec2:DescribeLaunchTemplateVersions"
+                ],
+                "Resource": ["*"]
+              }
+            ]
+          }
+          EOF
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name ClusterAutoscalerPolicy \
+            --policy-document file://cluster-autoscaler-policy.json || echo "Policy may already exist - continuing"
+          
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=cluster-autoscaler \
+            --attach-policy-arn=arn:aws:iam::$AWS_ACCOUNT_ID:policy/ClusterAutoscalerPolicy \
+            --override-existing-serviceaccounts \
+            --approve
+            
+          # Install Cluster Autoscaler
+          helm repo add autoscaler https://kubernetes.github.io/autoscaler
+          helm repo update
+          
+          helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+            --set autoDiscovery.clusterName=$CLUSTER_NAME \
+            --set awsRegion=$AWS_REGION \
+            --set rbac.serviceAccount.create=false \
+            --set rbac.serviceAccount.name=cluster-autoscaler \
+            --namespace kube-system || \
+          helm upgrade cluster-autoscaler autoscaler/cluster-autoscaler \
+            --set autoDiscovery.clusterName=$CLUSTER_NAME \
+            --set awsRegion=$AWS_REGION \
+            --set rbac.serviceAccount.create=false \
+            --set rbac.serviceAccount.name=cluster-autoscaler \
+            --namespace kube-system
+      
       - name: Verify Cluster Status and Components
         run: |
           echo "===== EKS Cluster Setup Complete ====="
           echo "Cluster name: $CLUSTER_NAME"
           echo "Region: $AWS_REGION"
+          echo "Domain: $DOMAIN_NAME"
           
           echo "Verifying cluster components..."
-          
-          # Verify cluster nodes
-          echo "Checking cluster nodes:"
-          kubectl get nodes
           
           # Verify AWS Load Balancer Controller
           echo "Checking AWS Load Balancer Controller:"
@@ -752,20 +483,11 @@ jobs:
           echo "Checking EKS add-ons:"
           aws eks list-addons --cluster-name $CLUSTER_NAME --region $AWS_REGION
           
-          # Check for any pods not running
-          echo "Checking for problematic pods:"
-          NOT_RUNNING=$(kubectl get pods --all-namespaces -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.namespace + "/" + .metadata.name')
-          if [ -n "$NOT_RUNNING" ]; then
-            echo "WARNING: Found pods not in Running/Succeeded state:"
-            echo "$NOT_RUNNING"
-          else
-            echo "All pods are running properly."
-          fi
-          
           # Output important information for next steps
           echo ""
           echo "===== Next Steps ====="
           echo "1. Run the Build and Deploy workflow to build and deploy your application"
           echo "2. After deploying, verify the application is working properly"
+          echo "3. If needed, run the DNS Configuration workflow to finalize DNS settings"
           echo ""
-          echo "Your EKS cluster is now ready for application deployment!"name: 1. EKS Cluster Setup
+          echo "Your EKS cluster is now ready for application deployment!"
