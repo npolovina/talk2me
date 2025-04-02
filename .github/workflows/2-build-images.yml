@@ -90,7 +90,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ needs.login-ecr.outputs.registry }}
         run: |
-          cd backend
+          cd ./backend
           docker build -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
@@ -106,7 +106,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ needs.login-ecr.outputs.registry }}
         run: |
-          cd frontend
+          cd ./frontend
           docker build -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
