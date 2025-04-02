@@ -1,0 +1,237 @@
+name: 3. Deploy Application to EKS
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      image_tag:
+        description: 'Docker Image Tag'
+        required: true
+        default: 'latest'
+      domain_name:
+        description: 'Domain Name'
+        required: true
+        default: 'talk2me-gen-z.com'
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+  DOMAIN_NAME: ${{ github.event.inputs.domain_name }}
+  API_DOMAIN_NAME: api.${{ github.event.inputs.domain_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-application:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+  
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+  
+    - name: Get AWS Account ID
+      id: get-aws-account
+      run: |
+        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+  
+    - name: Prepare Kubernetes Secrets
+      run: |
+        # Create namespace if not exists
+        kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+      
+        # Create or update secrets
+        kubectl create secret generic talk2me-secrets \
+          --namespace talk2me \
+          --from-literal=deepseek-api-key=${{ secrets.DEEPSEEK_API_KEY }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+  
+    - name: Deploy Backend
+      env:
+        ECR_REGISTRY: ${{ steps.get-aws-account.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+      run: |
+        # Prepare backend deployment
+        cat > backend-deployment.yaml << EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: talk2me-backend
+          namespace: talk2me
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: talk2me-backend
+          template:
+            metadata:
+              labels:
+                app: talk2me-backend
+            spec:
+              containers:
+              - name: backend
+                image: $ECR_REGISTRY/talk2me-backend:$IMAGE_TAG
+                ports:
+                - containerPort: 8000
+                env:
+                - name: DEEPSEEK_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: talk2me-secrets
+                      key: deepseek-api-key
+                resources:
+                  limits:
+                    cpu: "500m"
+                    memory: "512Mi"
+                  requests:
+                    cpu: "250m"
+                    memory: "256Mi"
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: talk2me-backend
+          namespace: talk2me
+        spec:
+          selector:
+            app: talk2me-backend
+          ports:
+          - port: 80
+            targetPort: 8000
+          type: ClusterIP
+        EOF
+      
+        kubectl apply -f backend-deployment.yaml
+  
+    - name: Deploy Frontend
+      env:
+        ECR_REGISTRY: ${{ steps.get-aws-account.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+      run: |
+        # Prepare frontend deployment
+        cat > frontend-deployment.yaml << EOF
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: talk2me-frontend
+          namespace: talk2me
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: talk2me-frontend
+          template:
+            metadata:
+              labels:
+                app: talk2me-frontend
+            spec:
+              containers:
+              - name: frontend
+                image: $ECR_REGISTRY/talk2me-frontend:$IMAGE_TAG
+                ports:
+                - containerPort: 80
+                env:
+                - name: REACT_APP_API_URL
+                  value: "https://$API_DOMAIN_NAME"
+                resources:
+                  limits:
+                    cpu: "300m"
+                    memory: "256Mi"
+                  requests:
+                    cpu: "100m"
+                    memory: "128Mi"
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: talk2me-frontend
+          namespace: talk2me
+        spec:
+          selector:
+            app: talk2me-frontend
+          ports:
+          - port: 80
+            targetPort: 80
+          type: ClusterIP
+        EOF
+      
+         kubectl apply -f frontend-deployment.yaml
+  
+    - name: Deploy Ingress
+      run: | 
+        # Try to find existing certificate
+        CERT_ARN=$(aws acm list-certificates \
+          --query "CertificateSummaryList[?contains(DomainName, '$DOMAIN_NAME') || contains(DomainName, '*.$DOMAIN_NAME')].CertificateArn" \
+          --output text)
+      
+        # Prepare ingress configuration
+        cat > ingress.yaml << EOF
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: talk2me-ingress
+          namespace: talk2me
+          annotations:
+            kubernetes.io/ingress.class: alb
+            alb.ingress.kubernetes.io/scheme: internet-facing
+            alb.ingress.kubernetes.io/target-type: ip
+            alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+            alb.ingress.kubernetes.io/ssl-redirect: '443'
+            external-dns.alpha.kubernetes.io/hostname: "$DOMAIN_NAME,$API_DOMAIN_NAME"
+            ${CERT_ARN:+alb.ingress.kubernetes.io/certificate-arn: $CERT_ARN}
+        spec:
+          rules:
+          - host: $DOMAIN_NAME
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: talk2me-frontend
+                    port:
+                      number: 80
+          - host: $API_DOMAIN_NAME
+            http:
+              paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: talk2me-backend
+                    port:
+                      number: 80
+        EOF
+      
+        kubectl apply -f ingress.yaml
+  
+    - name: Wait for Deployments
+      run: |
+        kubectl rollout status deployment/talk2me-backend -n talk2me
+        kubectl rollout status deployment/talk2me-frontend -n talk2me
+  
+    - name: Output Deployment Summary
+      run: |
+        echo "Deployment Summary:"
+        echo "Cluster: $CLUSTER_NAME"
+        echo "Region: $AWS_REGION"
+        echo "Frontend Image: $ECR_REGISTRY/talk2me-frontend:$IMAGE_TAG"
+        echo "Backend Image: $ECR_REGISTRY/talk2me-backend:$IMAGE_TAG"
+        echo "Frontend URL: https://$DOMAIN_NAME"
+        echo "Backend API URL: https://$API_DOMAIN_NAME"

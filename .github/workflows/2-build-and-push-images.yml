@@ -1,0 +1,97 @@
+name: 2. Build and Push Docker Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+      description: 'AWS Region'
+      required: true
+      default: 'us-east-1'
+    image_tag:
+      description: 'Docker Image Tag'
+      required: true
+      default: 'latest'
+    cluster_name:
+      description: 'EKS Cluster Name'
+      required: true
+      default: 'talk2me-cluster'
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  create-ecr-repositories:
+    name: Create ECR Repositories
+    runs-on: ubuntu-latest
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Create Backend ECR Repository
+      run: |
+        aws ecr describe-repositories --repository-names talk2me-backend || \
+        aws ecr create-repository --repository-name talk2me-backend
+    
+    - name: Create Frontend ECR Repository
+      run: |
+        aws ecr describe-repositories --repository-names talk2me-frontend || \
+        aws ecr create-repository --repository-name talk2me-frontend
+  build-and-push-backend:
+    name: Build and Push Backend Image
+    needs: create-ecr-repositories
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+  
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+  
+    - name: Build and Push Backend Docker Image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        cd backend
+        docker build -t $ECR_REGISTRY/talk2me-backend:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/talk2me-backend:$IMAGE_TAG
+  build-and-push-frontend:
+    name: Build and Push Frontend Image
+    needs: create-ecr-repositories
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+  
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+  
+    - name: Build and Push Frontend Docker Image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        REACT_APP_API_URL: https://api.talk2me-gen-z.com
+      run: |
+        cd frontend
+        docker build \
+          --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
+          -t $ECR_REGISTRY/talk2me-frontend:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/talk2me-frontend:$IMAGE_TAG
