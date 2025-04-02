@@ -1,0 +1,106 @@
+name: 3. Deploy Application to EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      image_tag:
+        description: 'Docker Image Tag'
+        required: true
+        default: 'latest'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-application:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Get AWS Account ID
+        id: get-aws-account
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+      
+      - name: Deploy Backend
+        run: |
+          # Process template with environment variables
+          envsubst < k8s/backend-deployement.yaml > backend-deployment.yaml
+          kubectl apply -f backend-deployment.yaml -n talk2me
+          kubectl apply -f k8s/backend-serivce.yaml -n talk2me
+      
+      - name: Deploy Frontend
+        run: |
+          # Process template with environment variables
+          envsubst < k8s/frontend-deployment.yaml > frontend-deployment.yaml
+          kubectl apply -f frontend-deployment.yaml -n talk2me
+          kubectl apply -f k8s/frontend-service.yaml -n talk2me
+      
+      - name: Deploy Ingress
+        run: |
+          kubectl apply -f k8s/ingress.yaml -n talk2me
+      
+      - name: Wait for deployments to be ready
+        run: |
+          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=300s
+          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=300s
+      
+      - name: Get load balancer address
+        run: |
+          echo "Waiting for ingress to get an address (this may take a few minutes)..."
+          
+          # Wait for the ingress to get an address
+          ATTEMPTS=0
+          MAX_ATTEMPTS=30
+          SLEEP_SECONDS=20
+          
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            LB_ADDRESS=$(kubectl get ingress talk2me-ingress -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            
+            if [ -n "$LB_ADDRESS" ]; then
+              echo "Ingress load balancer is available at: $LB_ADDRESS"
+              break
+            fi
+            
+            echo "Waiting for load balancer address... Attempt $(($ATTEMPTS+1))/$MAX_ATTEMPTS"
+            ATTEMPTS=$((ATTEMPTS+1))
+            sleep $SLEEP_SECONDS
+          done
+          
+          if [ -z "$LB_ADDRESS" ]; then
+            echo "Error: Load balancer address not available after several attempts"
+            kubectl get ingress talk2me-ingress -n talk2me -o yaml
+            exit 1
+          fi
+          
+          echo "Application should be accessible at:"
+          echo "  - Frontend: https://talk2me-gen-z.com"
+          echo "  - Backend API: https://api.talk2me-gen-z.com"

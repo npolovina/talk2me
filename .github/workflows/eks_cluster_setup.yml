@@ -1,0 +1,174 @@
+name: 1. EKS Cluster Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      node_group_size:
+        description: 'Node Group Size (min,desired,max)'
+        required: true
+        default: '2,3,4'
+      node_instance_type:
+        description: 'EC2 Instance Type for Nodes'
+        required: true
+        default: 't3.medium'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  eks-setup:
+    name: Create EKS Cluster
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install eksctl
+        run: |
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+      
+      - name: Create EKS cluster
+        run: |
+          # Parse node group size parameters
+          IFS=',' read -ra SIZES <<< "${{ github.event.inputs.node_group_size }}"
+          MIN_SIZE=${SIZES[0]}
+          DESIRED_SIZE=${SIZES[1]}
+          MAX_SIZE=${SIZES[2]}
+          
+          echo "Creating EKS cluster $CLUSTER_NAME in $AWS_REGION..."
+          eksctl create cluster \
+            --name $CLUSTER_NAME \
+            --region $AWS_REGION \
+            --version 1.28 \
+            --nodegroup-name standard-nodes \
+            --node-type ${{ github.event.inputs.node_instance_type }} \
+            --nodes-min $MIN_SIZE \
+            --nodes $DESIRED_SIZE \
+            --nodes-max $MAX_SIZE \
+            --with-oidc \
+            --managed
+            
+      - name: Install AWS Load Balancer Controller
+        run: |
+          # Create IAM policy for AWS Load Balancer Controller
+          curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.5.2/docs/install/iam_policy.json
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name AWSLoadBalancerControllerIAMPolicy \
+            --policy-document file://iam_policy.json || echo "Policy may already exist - continuing"
+
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/AWSLoadBalancerControllerIAMPolicy \
+            --override-existing-serviceaccounts \
+            --approve
+          
+          # Install Helm
+          curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          
+          # Add Helm repository
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          
+          # Install AWS Load Balancer Controller
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --set clusterName=$CLUSTER_NAME \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=$AWS_REGION \
+            -n kube-system
+      
+      - name: Setup External DNS (for Route53)
+        run: |
+          # Create IAM policy for External DNS
+          cat > external-dns-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "route53:ChangeResourceRecordSets"
+                ],
+                "Resource": [
+                  "arn:aws:route53:::hostedzone/*"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "route53:ListHostedZones",
+                  "route53:ListResourceRecordSets"
+                ],
+                "Resource": [
+                  "*"
+                ]
+              }
+            ]
+          }
+          EOF
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name ExternalDNSPolicy \
+            --policy-document file://external-dns-policy.json || echo "Policy may already exist - continuing"
+          
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=external-dns \
+            --attach-policy-arn=arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/ExternalDNSPolicy \
+            --override-existing-serviceaccounts \
+            --approve
+            
+          # Install External DNS
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+          
+          helm install external-dns bitnami/external-dns \
+            --set provider=aws \
+            --set aws.region=$AWS_REGION \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=external-dns \
+            --namespace kube-system
+            
+      - name: Create Kubernetes Namespace for Talk2Me
+        run: |
+          # Update kubectl config 
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          
+          # Create namespace
+          kubectl apply -f k8s/namespace.yaml
+          
+      - name: Create Secret for DeepSeek API Key
+        run: |
+          kubectl create secret generic talk2me-secrets \
+            --namespace talk2me \
+            --from-literal=deepseek-api-key=${{ secrets.DEEPSEEK_API_KEY }}

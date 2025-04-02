@@ -1,0 +1,151 @@
+name: 4. Configure Route53 DNS
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      domain_name:
+        description: 'Domain Name'
+        required: true
+        default: 'talk2me-gen-z.com'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  DOMAIN_NAME: ${{ github.event.inputs.domain_name }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  configure-dns:
+    name: Configure Route53 DNS
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Check if hosted zone exists
+        id: check-zone
+        run: |
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN_NAME --query "HostedZones[?Name=='$DOMAIN_NAME.'].Id" --output text | cut -d/ -f3)
+          
+          if [ -n "$ZONE_ID" ]; then
+            echo "Hosted zone exists with ID: $ZONE_ID"
+            echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+            echo "ZONE_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "Hosted zone does not exist"
+            echo "ZONE_EXISTS=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Create hosted zone if it doesn't exist
+        if: env.ZONE_EXISTS == 'false'
+        run: |
+          echo "Creating new hosted zone for $DOMAIN_NAME"
+          
+          ZONE_RESULT=$(aws route53 create-hosted-zone \
+            --name $DOMAIN_NAME \
+            --caller-reference "talk2me-$(date +%s)" \
+            --hosted-zone-config Comment="Hosted zone for Talk2Me application")
+          
+          # Extract zone ID from response
+          ZONE_ID=$(echo $ZONE_RESULT | jq -r '.HostedZone.Id' | cut -d/ -f3)
+          echo "Created new hosted zone with ID: $ZONE_ID"
+          echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+          
+          # Output nameservers for domain configuration
+          echo "Please configure your domain registrar with the following nameservers:"
+          echo $ZONE_RESULT | jq -r '.DelegationSet.NameServers[]' | sed 's/^/  - /'
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Get load balancer address
+        id: get-lb
+        run: |
+          echo "Waiting for ingress to get an address (this may take a few minutes)..."
+          
+          # Wait for the ingress to get an address
+          ATTEMPTS=0
+          MAX_ATTEMPTS=30
+          SLEEP_SECONDS=20
+          
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            LB_ADDRESS=$(kubectl get ingress talk2me-ingress -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            
+            if [ -n "$LB_ADDRESS" ]; then
+              echo "Ingress load balancer is available at: $LB_ADDRESS"
+              echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
+              break
+            fi
+            
+            echo "Waiting for load balancer address... Attempt $(($ATTEMPTS+1))/$MAX_ATTEMPTS"
+            ATTEMPTS=$((ATTEMPTS+1))
+            sleep $SLEEP_SECONDS
+          done
+          
+          if [ -z "$LB_ADDRESS" ]; then
+            echo "Error: Load balancer address not available after several attempts"
+            kubectl get ingress talk2me-ingress -n talk2me -o yaml
+            exit 1
+          fi
+      
+      - name: Create or update DNS records
+        run: |
+          # Create JSON for DNS change batch
+          cat > dns-changes.json << EOF
+          {
+            "Changes": [
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$DOMAIN_NAME",
+                  "Type": "A",
+                  "AliasTarget": {
+                    "HostedZoneId": "Z35SXDOTRQ7X7K",
+                    "DNSName": "$LB_ADDRESS",
+                    "EvaluateTargetHealth": true
+                  }
+                }
+              },
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "api.$DOMAIN_NAME",
+                  "Type": "A",
+                  "AliasTarget": {
+                    "HostedZoneId": "Z35SXDOTRQ7X7K",
+                    "DNSName": "$LB_ADDRESS",
+                    "EvaluateTargetHealth": true
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Apply the DNS changes
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id $ZONE_ID \
+            --change-batch file://dns-changes.json
+          
+          echo "DNS records have been configured for $DOMAIN_NAME and api.$DOMAIN_NAME"
+          echo "DNS changes take time to propagate. Please allow 5-10 minutes."
+          
+          echo "Application should be accessible at:"
+          echo "  - Frontend: https://$DOMAIN_NAME"
+          echo "  - Backend API: https://api.$DOMAIN_NAME"
