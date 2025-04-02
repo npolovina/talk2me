@@ -15,11 +15,6 @@ on:
         description: 'Docker Image Tag'
         required: true
         default: 'latest'
-      clean_up_resources:
-        description: 'Clean up existing resources first'
-        required: false
-        default: 'false'
-        type: boolean
 
 env:
   AWS_REGION: ${{ github.event.inputs.region }}
@@ -27,7 +22,6 @@ env:
   IMAGE_TAG: ${{ github.event.inputs.image_tag }}
   DOMAIN_NAME: 'talk2me-gen-z.com'
   API_DOMAIN_NAME: 'api.talk2me-gen-z.com'
-  UNIQUE_SUFFIX: ${{ github.run_id }}
 
 permissions:
   id-token: write
@@ -58,44 +52,51 @@ jobs:
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
       
-      - name: Clean up existing resources
-        if: ${{ github.event.inputs.clean_up_resources == 'true' }}
+      - name: Find existing load balancer
+        id: find-lb
         run: |
-          echo "Cleaning up existing resources..."
+          echo "Looking for existing load balancers related to EKS cluster $CLUSTER_NAME..."
           
-          # First, find the problematic load balancer
-          echo "Looking for existing load balancer 'k8s-talk2me-talk2mei-6ef1613cb5'..."
-          LB_ARN=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-talk2me-talk2mei')].LoadBalancerArn" --output text || echo "")
+          # Get the VPC ID from the EKS cluster
+          VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.resourcesVpcConfig.vpcId" --output text)
+          echo "Cluster VPC ID: $VPC_ID"
           
-          if [ -n "$LB_ARN" ]; then
-            echo "Found load balancer: $LB_ARN"
+          # Find load balancers in this VPC
+          LBS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID']" --output json)
+          LB_COUNT=$(echo "$LBS" | jq length)
+          echo "Found $LB_COUNT load balancers in the EKS cluster VPC"
+          
+          if [ "$LB_COUNT" -gt 0 ]; then
+            # List the load balancers
+            echo "Available load balancers:"
+            echo "$LBS" | jq -r '.[] | "- Name: " + .LoadBalancerName + ", DNSName: " + .DNSName + ", Type: " + .Type'
             
-            # Get target groups for this LB
-            TG_ARNS=$(aws elbv2 describe-target-groups --load-balancer-arn $LB_ARN --query 'TargetGroups[].TargetGroupArn' --output text || echo "")
+            # Find ALBs (application load balancers)
+            ALBS=$(echo "$LBS" | jq -r '[.[] | select(.Type=="application")]')
+            ALB_COUNT=$(echo "$ALBS" | jq length)
             
-            # Delete the load balancer
-            echo "Deleting load balancer..."
-            aws elbv2 delete-load-balancer --load-balancer-arn $LB_ARN
-            echo "Waiting for load balancer to be deleted..."
-            sleep 30
-            
-            # Delete target groups
-            if [ -n "$TG_ARNS" ]; then
-              echo "Deleting associated target groups..."
-              for TG_ARN in $TG_ARNS; do
-                echo "Deleting target group: $TG_ARN"
-                aws elbv2 delete-target-group --target-group-arn $TG_ARN || echo "Failed to delete target group"
-              done
+            if [ "$ALB_COUNT" -gt 0 ]; then
+              # Get the first ALB in the list - we'll use this one
+              FIRST_ALB=$(echo "$ALBS" | jq -r '.[0]')
+              ALB_NAME=$(echo "$FIRST_ALB" | jq -r '.LoadBalancerName')
+              ALB_DNS=$(echo "$FIRST_ALB" | jq -r '.DNSName')
+              ALB_ARN=$(echo "$FIRST_ALB" | jq -r '.LoadBalancerArn')
+              ALB_ZONE_ID=$(echo "$FIRST_ALB" | jq -r '.CanonicalHostedZoneId')
+              
+              echo "Using existing ALB: $ALB_NAME ($ALB_DNS)"
+              echo "ALB_NAME=$ALB_NAME" >> $GITHUB_ENV
+              echo "ALB_DNS=$ALB_DNS" >> $GITHUB_ENV
+              echo "ALB_ARN=$ALB_ARN" >> $GITHUB_ENV
+              echo "ALB_ZONE_ID=$ALB_ZONE_ID" >> $GITHUB_ENV
+              echo "found=true" >> $GITHUB_OUTPUT
+            else
+              echo "No application load balancers found in the VPC"
+              echo "found=false" >> $GITHUB_OUTPUT
             fi
           else
-            echo "No existing load balancer found with name 'k8s-talk2me-talk2mei-6ef1613cb5'"
+            echo "No load balancers found in the VPC"
+            echo "found=false" >> $GITHUB_OUTPUT
           fi
-          
-          # Now clean up the Kubernetes resources
-          echo "Deleting existing ingress resource..."
-          kubectl delete ingress talk2me-ingress -n talk2me --ignore-not-found=true
-          
-          echo "Clean up complete"
       
       - name: Deploy Backend
         run: |
@@ -178,39 +179,68 @@ jobs:
             echo "certificate_found=false" >> $GITHUB_OUTPUT
           fi
       
-      - name: Create unique ingress with new load balancer name
+      - name: Create or update services and ingress
         run: |
-          echo "Creating unique ingress with specific load balancer name..."
+          # First remove any existing ingress to avoid conflicts
+          echo "Removing any existing ingress..."
+          kubectl delete ingress talk2me-ingress -n talk2me --ignore-not-found
           
-          # Use a unique load balancer name based on run ID
-          LB_NAME="talk2me-lb-${{ env.UNIQUE_SUFFIX }}"
-          echo "Using load balancer name: $LB_NAME"
-          
-          # Create a new ingress file
-          cat << EOF > ingress.yaml
-          apiVersion: networking.k8s.io/v1
-          kind: Ingress
-          metadata:
-            name: talk2me-ingress
-            namespace: talk2me
-            annotations:
-              kubernetes.io/ingress.class: "alb"
-              alb.ingress.kubernetes.io/scheme: internet-facing
-              alb.ingress.kubernetes.io/target-type: ip
-              alb.ingress.kubernetes.io/load-balancer-name: "$LB_NAME"
-              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-              alb.ingress.kubernetes.io/ssl-redirect: '443'
-              alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
-              external-dns.alpha.kubernetes.io/hostname: "$DOMAIN_NAME,$API_DOMAIN_NAME"
-              alb.ingress.kubernetes.io/tags: Environment=prod,Team=talk2me
-          EOF
-          
-          # Add certificate ARN if found
-          if [ "${{ steps.get-certificate.outputs.certificate_found }}" == "true" ]; then
-            echo "    alb.ingress.kubernetes.io/certificate-arn: \"$CERTIFICATE_ARN\"" >> ingress.yaml
+          # Create new ingress based on whether we found an existing ALB
+          if [ "${{ steps.find-lb.outputs.found }}" == "true" ]; then
+            echo "Creating ingress with reference to existing ALB: $ALB_NAME"
+            
+            # Create a new ingress file that references the existing ALB
+            cat << EOF > ingress.yaml
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: talk2me-ingress
+              namespace: talk2me
+              annotations:
+                kubernetes.io/ingress.class: "alb"
+                alb.ingress.kubernetes.io/scheme: internet-facing
+                alb.ingress.kubernetes.io/target-type: ip
+                alb.ingress.kubernetes.io/load-balancer-name: "$ALB_NAME"
+                alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+                alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+                alb.ingress.kubernetes.io/ssl-redirect: '443'
+                alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+                external-dns.alpha.kubernetes.io/hostname: "$DOMAIN_NAME,$API_DOMAIN_NAME"
+                alb.ingress.kubernetes.io/tags: Environment=prod,Team=talk2me
+            EOF
+            
+            # Add certificate ARN if found
+            if [ "${{ steps.get-certificate.outputs.certificate_found }}" == "true" ]; then
+              echo "    alb.ingress.kubernetes.io/certificate-arn: \"$CERTIFICATE_ARN\"" >> ingress.yaml
+            fi
+          else
+            echo "No existing ALB found. Creating new ingress without specifying ALB name."
+            
+            # Create a new ingress file without specifying ALB name
+            cat << EOF > ingress.yaml
+            apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: talk2me-ingress
+              namespace: talk2me
+              annotations:
+                kubernetes.io/ingress.class: "alb"
+                alb.ingress.kubernetes.io/scheme: internet-facing
+                alb.ingress.kubernetes.io/target-type: ip
+                alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+                alb.ingress.kubernetes.io/ssl-redirect: '443'
+                alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+                external-dns.alpha.kubernetes.io/hostname: "$DOMAIN_NAME,$API_DOMAIN_NAME"
+                alb.ingress.kubernetes.io/tags: Environment=prod,Team=talk2me
+            EOF
+            
+            # Add certificate ARN if found
+            if [ "${{ steps.get-certificate.outputs.certificate_found }}" == "true" ]; then
+              echo "    alb.ingress.kubernetes.io/certificate-arn: \"$CERTIFICATE_ARN\"" >> ingress.yaml
+            fi
           fi
           
-          # Add the rules
+          # Add the rules to the ingress
           cat << EOF >> ingress.yaml
           spec:
             rules:
@@ -251,62 +281,58 @@ jobs:
           echo "Waiting for frontend deployment to be ready..."
           kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=300s
       
-      - name: Wait for ingress and load balancer
+      - name: Wait for ingress to connect to load balancer
         run: |
-          echo "Waiting for ingress to get an address (this may take a few minutes)..."
+          echo "Waiting for ingress to be connected to the load balancer (this may take a few minutes)..."
           
-          # Wait for the ingress to get an address
-          ATTEMPTS=0
-          MAX_ATTEMPTS=45  # ~15 minutes
-          SLEEP_SECONDS=20
-          
-          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
-            LB_ADDRESS=$(kubectl get ingress talk2me-ingress -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+          # If we found an existing ALB, we can use its DNS immediately
+          if [ "${{ steps.find-lb.outputs.found }}" == "true" ]; then
+            echo "Using existing ALB DNS: $ALB_DNS"
+            LB_ADDRESS="$ALB_DNS"
+            echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
+          else
+            # Otherwise, wait for the ingress to get an address
+            ATTEMPTS=0
+            MAX_ATTEMPTS=30
+            SLEEP_SECONDS=20
             
-            if [ -n "$LB_ADDRESS" ]; then
-              echo "Ingress load balancer is available at: $LB_ADDRESS"
-              echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
-              break
-            fi
-            
-            echo "Waiting for load balancer address... Attempt $(($ATTEMPTS+1))/$MAX_ATTEMPTS"
-            
-            # Every few attempts, check AWS resources and ingress status
-            if [ $(($ATTEMPTS % 5)) -eq 0 ]; then
-              echo "-----------------------------------"
-              echo "Checking ingress status:"
-              kubectl describe ingress talk2me-ingress -n talk2me
+            while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+              LB_ADDRESS=$(kubectl get ingress talk2me-ingress -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
               
-              echo "-----------------------------------"
-              echo "Checking AWS Load Balancer Controller logs:"
-              kubectl logs -n kube-system deployment/aws-load-balancer-controller --tail=20 || echo "Failed to get logs"
+              if [ -n "$LB_ADDRESS" ]; then
+                echo "Ingress load balancer is available at: $LB_ADDRESS"
+                echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
+                break
+              fi
               
-              echo "-----------------------------------"
-              echo "Checking for load balancer in AWS:"
-              LB_NAME="talk2me-lb-${{ env.UNIQUE_SUFFIX }}"
-              aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, '$LB_NAME')].{Name:LoadBalancerName,DNSName:DNSName,State:State.Code}" --output table || echo "No matching load balancer found yet"
-            fi
+              echo "Waiting for load balancer address... Attempt $(($ATTEMPTS+1))/$MAX_ATTEMPTS"
+              
+              # Every few attempts, check the ingress status
+              if [ $(($ATTEMPTS % 5)) -eq 0 ]; then
+                echo "Checking ingress status:"
+                kubectl describe ingress talk2me-ingress -n talk2me
+                echo "Checking AWS Load Balancer Controller logs:"
+                kubectl logs -n kube-system deployment/aws-load-balancer-controller --tail=20 || echo "Failed to get logs"
+              fi
+              
+              ATTEMPTS=$((ATTEMPTS+1))
+              sleep $SLEEP_SECONDS
+            done
             
-            ATTEMPTS=$((ATTEMPTS+1))
-            sleep $SLEEP_SECONDS
-          done
-          
-          if [ -z "$LB_ADDRESS" ]; then
-            echo "Warning: Load balancer address not available after several attempts"
-            kubectl get ingress talk2me-ingress -n talk2me -o yaml
-            
-            # Check AWS for the load balancer directly
-            LB_NAME="talk2me-lb-${{ env.UNIQUE_SUFFIX }}"
-            LB_INFO=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, '$LB_NAME')]" --output json)
-            
-            if [ "$(echo "$LB_INFO" | jq 'length')" -gt 0 ]; then
-              AWS_LB_DNS=$(echo "$LB_INFO" | jq -r '.[0].DNSName')
-              echo "Found load balancer in AWS: $AWS_LB_DNS"
-              echo "LB_ADDRESS=$AWS_LB_DNS" >> $GITHUB_ENV
-            else
-              echo "Could not find load balancer in AWS. Check AWS Load Balancer Controller logs."
-              echo "AWS Load Balancer Controller logs:"
-              kubectl logs -n kube-system deployment/aws-load-balancer-controller --tail=50 || echo "Failed to get logs"
+            if [ -z "$LB_ADDRESS" ]; then
+              echo "Warning: Load balancer address not available after several attempts"
+              kubectl get ingress talk2me-ingress -n talk2me -o yaml
+              
+              if [ "${{ steps.find-lb.outputs.found }}" == "true" ]; then
+                # Fall back to the ALB DNS we found earlier
+                echo "Using fallback to the existing ALB DNS: $ALB_DNS"
+                LB_ADDRESS="$ALB_DNS"
+                echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
+              else
+                echo "Could not determine the load balancer address."
+                echo "AWS Load Balancer Controller logs:"
+                kubectl logs -n kube-system deployment/aws-load-balancer-controller --tail=50 || echo "Failed to get logs"
+              fi
             fi
           fi
       
@@ -340,12 +366,11 @@ jobs:
             echo "Updating Route53 DNS records to point to: $LB_ADDRESS"
             
             # Get the ALB hosted zone ID
-            LB_NAME="talk2me-lb-${{ env.UNIQUE_SUFFIX }}"
-            ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, '$LB_NAME')].CanonicalHostedZoneId" --output text || echo "Z35SXDOTRQ7X7K")
-            
-            # If we couldn't get the hosted zone ID, use the default for us-east-1
-            if [ -z "$ALB_HOSTED_ZONE_ID" ] || [ "$ALB_HOSTED_ZONE_ID" == "None" ]; then
-              ALB_HOSTED_ZONE_ID="Z35SXDOTRQ7X7K"  # Default for us-east-1
+            if [ -n "$ALB_ZONE_ID" ]; then
+              CANONICAL_HOSTED_ZONE_ID="$ALB_ZONE_ID"
+            else
+              # Use the default for us-east-1 if we couldn't get it from the ALB
+              CANONICAL_HOSTED_ZONE_ID="Z35SXDOTRQ7X7K"
             fi
             
             # Create JSON for DNS change batch
@@ -358,7 +383,7 @@ jobs:
                     "Name": "$DOMAIN_NAME",
                     "Type": "A",
                     "AliasTarget": {
-                      "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
+                      "HostedZoneId": "$CANONICAL_HOSTED_ZONE_ID",
                       "DNSName": "$LB_ADDRESS",
                       "EvaluateTargetHealth": true
                     }
@@ -370,7 +395,7 @@ jobs:
                     "Name": "$API_DOMAIN_NAME",
                     "Type": "A",
                     "AliasTarget": {
-                      "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
+                      "HostedZoneId": "$CANONICAL_HOSTED_ZONE_ID",
                       "DNSName": "$LB_ADDRESS",
                       "EvaluateTargetHealth": true
                     }
@@ -390,45 +415,4 @@ jobs:
             echo "DNS change ID: $CHANGE_ID"
             echo "DNS changes take time to propagate. Please allow 5-10 minutes."
           else
-            echo "Failed to get or create hosted zone. DNS records not updated."
-          fi
-      
-      - name: Summary
-        run: |
-          echo "=========== Deployment Summary ==========="
-          echo "Application deployed to EKS cluster: $CLUSTER_NAME"
-          echo "Region: $AWS_REGION"
-          echo "Image tag: $IMAGE_TAG"
-          
-          # Check all resources
-          echo ""
-          echo "Kubernetes resources:"
-          echo "- Deployments:"
-          kubectl get deployments -n talk2me
-          
-          echo "- Services:"
-          kubectl get services -n talk2me
-          
-          echo "- Ingress:"
-          kubectl get ingress -n talk2me
-          
-          echo "- Pods:"
-          kubectl get pods -n talk2me
-          
-          # Show access information
-          echo ""
-          echo "Access Information:"
-          if [ -n "$LB_ADDRESS" ]; then
-            echo "Load Balancer Address: $LB_ADDRESS"
-            echo "Frontend URL: https://$DOMAIN_NAME"
-            echo "Backend API URL: https://$API_DOMAIN_NAME"
-            echo "Direct ALB access: http://$LB_ADDRESS"
-            echo ""
-            echo "DNS records have been updated, but changes may take time to propagate."
-            echo "If the application is not accessible immediately, please wait 5-10 minutes."
-          else
-            echo "Load Balancer Address: Not available"
-            echo "Could not determine the load balancer address. Check the AWS Load Balancer Controller logs."
-          fi
-          
-          echo "=========================================="
+            echo "Failed to get or create hosted zone. DNS records not updated
