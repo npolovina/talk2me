@@ -132,6 +132,12 @@ jobs:
                     "iam:PassRole",
                     "iam:CreateServiceLinkedRole",
                     "iam:TagRole",
+                    "iam:GetOpenIDConnectProvider",
+                    "iam:CreateOpenIDConnectProvider",
+                    "iam:DeleteOpenIDConnectProvider",
+                    "iam:TagOpenIDConnectProvider",
+                    "iam:ListOpenIDConnectProviders",
+                    "iam:ListOpenIDConnectProviderTags",
                     "route53:*",
                     "autoscaling:*",
                     "elasticloadbalancing:*",
@@ -154,7 +160,7 @@ jobs:
             POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
             echo "IAM policy for Talk2Me deployment already exists"
             
-            # Update the policy to include the missing permission
+            # Update the policy to include the missing permissions
             echo '{
               "Version": "2012-10-17",
               "Statement": [
@@ -179,6 +185,12 @@ jobs:
                     "iam:PassRole",
                     "iam:CreateServiceLinkedRole",
                     "iam:TagRole",
+                    "iam:GetOpenIDConnectProvider",
+                    "iam:CreateOpenIDConnectProvider",
+                    "iam:DeleteOpenIDConnectProvider",
+                    "iam:TagOpenIDConnectProvider",
+                    "iam:ListOpenIDConnectProviders",
+                    "iam:ListOpenIDConnectProviderTags",
                     "route53:*",
                     "autoscaling:*",
                     "elasticloadbalancing:*",
