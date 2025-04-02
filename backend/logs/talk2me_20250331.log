@@ -569,3 +569,10 @@
 2025-04-02 11:29:14,054 - talk2me - INFO - Request origin: No Origin
 2025-04-02 11:29:14,075 - talk2me - INFO - Root endpoint accessed
 2025-04-02 11:29:14,099 - talk2me - INFO - Request 1743607754.0230446 completed with status code 200
+2025-04-02 11:37:05,798 - talk2me - INFO - Request 1743608225.795066 started: GET /health
+2025-04-02 11:37:05,802 - talk2me - INFO - Request origin: No Origin
+2025-04-02 11:37:05,839 - talk2me - INFO - Health check endpoint accessed
+2025-04-02 11:37:05,852 - talk2me - INFO - Request 1743608225.795066 completed with status code 200
+2025-04-02 11:37:10,710 - talk2me - INFO - Request 1743608230.7100956 started: GET /api/chat
+2025-04-02 11:37:10,710 - talk2me - INFO - Request origin: No Origin
+2025-04-02 11:37:10,724 - talk2me - INFO - Request 1743608230.7100956 completed with status code 405
