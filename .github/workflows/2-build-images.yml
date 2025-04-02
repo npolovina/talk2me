@@ -84,8 +84,9 @@ jobs:
       - name: Check for existing images
         id: check-images
         run: |
-          BACKEND_EXISTS=$(aws ecr describe-images --repository-name $BACKEND_ECR_REPOSITORY --image-ids imageTag=$IMAGE_TAG 2>/dev/null && echo "true" || echo "false")
-          FRONTEND_EXISTS=$(aws ecr describe-images --repository-name $FRONTEND_ECR_REPOSITORY --image-ids imageTag=$IMAGE_TAG 2>/dev/null && echo "true" || echo "false")
+          set -e
+          BACKEND_EXISTS=$(aws ecr describe-images --repository-name $BACKEND_ECR_REPOSITORY --query "length(imageDetails[?contains(imageTags, '$IMAGE_TAG')])" --output text)
+          FRONTEND_EXISTS=$(aws ecr describe-images --repository-name $FRONTEND_ECR_REPOSITORY --query "length(imageDetails[?contains(imageTags, '$IMAGE_TAG')])" --output text)
 
           echo "BACKEND_EXISTS=$BACKEND_EXISTS" >> $GITHUB_ENV
           echo "FRONTEND_EXISTS=$FRONTEND_EXISTS" >> $GITHUB_ENV
@@ -191,7 +192,7 @@ jobs:
           echo "IMAGE_TAG=${{ env.IMAGE_TAG }}" >> ./artifacts/image-info.env
 
       - name: Save Image Information
-        uses: actions/upload-artifact@v4  # Updated to a specific version
+        uses: actions/upload-artifact@v4
         with:
           name: image-info
           path: ./artifacts/image-info.env
