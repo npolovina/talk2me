@@ -73,7 +73,7 @@ jobs:
                   "Effect": "Allow",
                   "Principal": {
                     "Federated": "'"$OIDC_PROVIDER_ARN"'",
-                    "AWS": "arn:aws:iam::637423575947:user/GitHub-Actions-User"
+                    "AWS": "${{ secrets.AWS_GITHUB_ACTIONS_USER_ARN}}"
                   },
                   "Action": "sts:AssumeRoleWithWebIdentity",
                   "Condition": {
