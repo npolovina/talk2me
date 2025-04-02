@@ -40,102 +40,145 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-    
+  
     - name: Get AWS Account ID
       id: get-aws-account
       run: |
         AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
 
-    - name: Create IAM OIDC Provider
+    - name: Check and Create OIDC Provider
       run: |
-        OIDC_PROVIDER_EXISTS=$(aws iam list-open-id-connect-providers | grep $GITHUB_OIDC_PROVIDER_URL || echo "")
+        # More precise way to check for existing OIDC provider
+        EXISTING_PROVIDERS=$(aws iam list-open-id-connect-providers \
+          --query "OpenIDConnectProviderList[?contains(Arn, '$GITHUB_OIDC_PROVIDER_URL')].Arn" \
+          --output text)
+      
+        if [ -z "$EXISTING_PROVIDERS" ]; then
+          echo "Creating OIDC Provider for GitHub Actions..."
         
-        if [ -z "$OIDC_PROVIDER_EXISTS" ]; then
-            echo "Creating OIDC Provider for GitHub Actions..."
-            
-            aws iam create-open-id-connect-provider \
-            --url https://$GITHUB_OIDC_PROVIDER_URL \
-            --client-id-list $GITHUB_OIDC_AUDIENCE \
-            --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1"
+          # GitHub's thumbprint (valid as of 2023)
+          THUMBPRINT="6938fd4d98bab03faadb97b34396831e3780aea1"
+        
+        # Create OIDC provider with more detailed error handling
+          aws iam create-open-id-connect-provider \
+            --url "https://$GITHUB_OIDC_PROVIDER_URL" \
+            --client-id-list "$GITHUB_OIDC_AUDIENCE" \
+            --thumbprint-list "$THUMBPRINT" || {
+              echo "Failed to create OIDC provider. Checking for specific errors..."
+              aws sts get-caller-identity
+              echo "Verifying AWS CLI configuration..."
+              aws configure list
+              exit 1
+            }
         else
-            echo "OIDC Provider for GitHub Actions already exists"
+          echo "OIDC Provider for GitHub Actions already exists"
         fi
-    
+  
     - name: Create GitHub Actions IAM Role
       run: |
         ROLE_NAME="github-actions-talk2me-role"
-        
+      
+        # Retrieve OIDC Provider ARN
+        OIDC_PROVIDER_ARN=$(aws iam list-open-id-connect-providers \
+          --query "OpenIDConnectProviderList[?contains(Arn, '$GITHUB_OIDC_PROVIDER_URL')].Arn" \
+          --output text)
+      
+        if [ -z "$OIDC_PROVIDER_ARN" ]; then
+          echo "Error: OIDC Provider ARN not found"
+          exit 1
+        fi
+      
         # Create trust policy
         cat > trust-policy.json << EOF
         {
-            "Version": "2012-10-17",
-            "Statement": [
+          "Version": "2012-10-17",
+          "Statement": [
             {
-                "Effect": "Allow",
-                "Principal": {
-                "Federated": "arn:aws:iam::$AWS_ACCOUNT_ID:oidc-provider/$GITHUB_OIDC_PROVIDER_URL"
-                },
-                "Action": "sts:AssumeRoleWithWebIdentity",
-                "Condition": {
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "$OIDC_PROVIDER_ARN"
+            },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
                 "StringEquals": {
-                    "$GITHUB_OIDC_PROVIDER_URL:aud": "$GITHUB_OIDC_AUDIENCE"
+                  "$GITHUB_OIDC_PROVIDER_URL:aud": "$GITHUB_OIDC_AUDIENCE"
                 },
                 "StringLike": {
-                    "$GITHUB_OIDC_PROVIDER_URL:sub": "repo:${{ github.repository }}:*"
+                  "$GITHUB_OIDC_PROVIDER_URL:sub": "repo:${{ github.repository }}:*"
                 }
-                }
+              }
             }
-            ]
+          ]
         }
         EOF
-        
-        # Create or update role
-        aws iam create-role --role-name $ROLE_NAME \
-            --assume-role-policy-document file://trust-policy.json \
-            || aws iam update-assume-role-policy --role-name $ROLE_NAME \
+      
+        # Check if role exists
+        if aws iam get-role --role-name "$ROLE_NAME" 2>/dev/null; then
+          echo "Updating existing role's trust policy"
+          aws iam update-assume-role-policy \
+            --role-name "$ROLE_NAME" \
             --policy-document file://trust-policy.json
-
+        else
+          echo "Creating new IAM role"
+          aws iam create-role \
+            --role-name "$ROLE_NAME" \
+            --assume-role-policy-document file://trust-policy.json
+        fi
+  
     - name: Create IAM Policy for Deployment
       run: |
+        ROLE_NAME="github-actions-talk2me-role"
         POLICY_NAME="talk2me-deployment-policy"
-        
+      
+        # Create comprehensive deployment policy
         cat > deployment-policy.json << EOF
         {
-            "Version": "2012-10-17",
-            "Statement": [
+          "Version": "2012-10-17",
+          "Statement": [
             {
-                "Effect": "Allow",
-                "Action": [
+              "Effect": "Allow",
+              "Action": [
                 "eks:*",
                 "ec2:*",
                 "ecr:*",
-                "iam:*",
+                "iam:GetRole",
+                "iam:CreateRole",
+                "iam:DeleteRole",
+                "iam:AttachRolePolicy",
+                "iam:DetachRolePolicy",
+                "iam:CreatePolicy",
+                "iam:ListPolicies",
+                "iam:GetPolicy",
                 "route53:*",
                 "elasticloadbalancing:*",
-                "acm:*",
-                "cloudformation:*"
-                ],
-                "Resource": "*"
+                "cloudformation:*",
+                "acm:*"
+              ],
+              "Resource": "*"
             }
-            ]
+          ]
         }
         EOF
-        
+      
         # Create or update policy
         POLICY_ARN=$(aws iam create-policy \
-            --policy-name $POLICY_NAME \
-            --policy-document file://deployment-policy.json \
-            --query 'Policy.Arn' \
-            --output text 2>/dev/null || aws iam get-policy --policy-arn arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME --query 'Policy.Arn' --output text)
-        
+          --policy-name "$POLICY_NAME" \
+          --policy-document file://deployment-policy.json \
+          --query 'Policy.Arn' \
+          --output text 2>/dev/null || \
+          aws iam get-policy --policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME" \
+          --query 'Policy.Arn' --output text)
+      
         # Attach policy to role
         aws iam attach-role-policy \
-            --role-name github-actions-talk2me-role \
-            --policy-arn $POLICY_ARN
-
+          --role-name "$ROLE_NAME" \
+          --policy-arn "$POLICY_ARN"
+  
     - name: Output Configuration
       run: |
         echo "AWS IAM Configuration Complete"
+        echo "Role Name: github-actions-talk2me-role"
         echo "Role ARN: arn:aws:iam::$AWS_ACCOUNT_ID:role/github-actions-talk2me-role"
-        echo "Add this Role ARN to your GitHub Secrets as AWS_ROLE_ARN"
+        echo ""
+        echo "IMPORTANT: Add the Role ARN to your GitHub Secrets as AWS_ROLE_ARN"
