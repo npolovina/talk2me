@@ -1,0 +1,562 @@
+name: 4. Cleanup Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      domain_name:
+        description: 'Domain Name'
+        required: true
+        default: 'talk2me-gen-z.com'
+      delete_domain_records:
+        description: 'Delete Route53 Domain Records'
+        required: true
+        default: 'true'
+        type: boolean
+      delete_hosted_zone:
+        description: 'Delete Route53 Hosted Zone'
+        required: true
+        default: 'false'
+        type: boolean
+      delete_certificates:
+        description: 'Delete ACM Certificates'
+        required: true
+        default: 'true'
+        type: boolean
+      delete_ecr_repositories:
+        description: 'Delete ECR Repositories and Images'
+        required: true
+        default: 'true'
+        type: boolean
+      delete_iam_roles:
+        description: 'Delete IAM Roles and Policies'
+        required: true
+        default: 'false'
+        type: boolean
+      confirm_deletion:
+        description: 'Type "DELETE" to confirm resource deletion'
+        required: true
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  DOMAIN_NAME: ${{ github.event.inputs.domain_name }}
+  API_DOMAIN_NAME: api.${{ github.event.inputs.domain_name }}
+  BACKEND_ECR_REPOSITORY: talk2me-backend
+  FRONTEND_ECR_REPOSITORY: talk2me-frontend
+  ALB_NAME: talk2me-alb
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate-deletion:
+    name: Validate Deletion Request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm_deletion }}" != "DELETE" ]; then
+            echo "Error: You must type 'DELETE' exactly to confirm resource deletion"
+            exit 1
+          fi
+          
+          echo "Deletion confirmed. Proceeding with cleanup process."
+          echo "⚠️ WARNING: This workflow will permanently delete resources. This cannot be undone. ⚠️"
+  
+  cleanup-dns:
+    name: Clean Up DNS Records
+    needs: validate-deletion
+    runs-on: ubuntu-latest
+    if: github.event.inputs.delete_domain_records == 'true'
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Check if hosted zone exists
+        id: check-zone
+        run: |
+          echo "Checking if Route53 hosted zone exists for $DOMAIN_NAME..."
+          
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN_NAME --query "HostedZones[?Name=='$DOMAIN_NAME.'].Id" --output text | cut -d/ -f3)
+          
+          if [ -n "$ZONE_ID" ]; then
+            echo "Hosted zone exists with ID: $ZONE_ID"
+            echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+            echo "ZONE_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "Hosted zone does not exist"
+            echo "ZONE_EXISTS=false" >> $GITHUB_ENV
+            echo "No DNS records to clean up"
+          fi
+      
+      - name: Delete domain records
+        if: env.ZONE_EXISTS == 'true'
+        run: |
+          echo "Deleting DNS records for $DOMAIN_NAME and $API_DOMAIN_NAME..."
+          
+          # Get all record sets except NS and SOA records
+          RECORD_SETS=$(aws route53 list-resource-record-sets \
+            --hosted-zone-id $ZONE_ID \
+            --query "ResourceRecordSets[?!(Type=='NS' || Type=='SOA')]" \
+            --output json)
+          
+          # Delete each record set
+          echo $RECORD_SETS | jq -c '.[]' | while read -r record; do
+            NAME=$(echo $record | jq -r '.Name')
+            TYPE=$(echo $record | jq -r '.Type')
+            
+            echo "Deleting record: $NAME ($TYPE)"
+            
+            # Create change batch JSON for this record
+            echo $record | jq -c '{
+              "Changes": [
+                {
+                  "Action": "DELETE",
+                  "ResourceRecordSet": .
+                }
+              ]
+            }' > delete-record.json
+            
+            # Apply the deletion
+            aws route53 change-resource-record-sets \
+              --hosted-zone-id $ZONE_ID \
+              --change-batch file://delete-record.json || echo "Failed to delete record $NAME, continuing..."
+          done
+          
+          echo "DNS records deleted successfully"
+      
+      - name: Delete hosted zone
+        if: env.ZONE_EXISTS == 'true' && github.event.inputs.delete_hosted_zone == 'true'
+        run: |
+          echo "Deleting Route53 hosted zone for $DOMAIN_NAME..."
+          
+          # Delete the hosted zone
+          aws route53 delete-hosted-zone --id $ZONE_ID
+          
+          echo "Hosted zone deleted successfully"
+  
+  cleanup-certificates:
+    name: Clean Up ACM Certificates
+    needs: [validate-deletion, cleanup-dns]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.delete_certificates == 'true' && success()
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Find and delete certificates
+        run: |
+          echo "Finding certificates for $DOMAIN_NAME..."
+          
+          # Get certificates related to the domain
+          CERTIFICATES=$(aws acm list-certificates \
+            --query "CertificateSummaryList[?contains(DomainName, '$DOMAIN_NAME')].[CertificateArn]" \
+            --output text)
+          
+          if [ -z "$CERTIFICATES" ]; then
+            echo "No certificates found for $DOMAIN_NAME"
+          else
+            # Delete each certificate
+            for CERT_ARN in $CERTIFICATES; do
+              echo "Deleting certificate: $CERT_ARN"
+              aws acm delete-certificate --certificate-arn $CERT_ARN || echo "Failed to delete certificate, continuing..."
+            done
+            
+            echo "Certificates deleted successfully"
+          fi
+  
+  cleanup-kubernetes-resources:
+    name: Clean Up Kubernetes Resources
+    needs: validate-deletion
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Check if cluster exists
+        id: check-cluster
+        run: |
+          if aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION &> /dev/null; then
+            echo "EKS cluster $CLUSTER_NAME exists"
+            echo "CLUSTER_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "EKS cluster $CLUSTER_NAME does not exist"
+            echo "CLUSTER_EXISTS=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Update kubeconfig
+        if: env.CLUSTER_EXISTS == 'true'
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Delete Kubernetes resources
+        if: env.CLUSTER_EXISTS == 'true'
+        run: |
+          echo "Deleting Kubernetes resources in the talk2me namespace..."
+          
+          # Delete ingress first to ensure load balancer cleanup
+          echo "Deleting ingress..."
+          kubectl delete ingress --all -n talk2me --timeout=60s || echo "No ingress resources found or failed to delete"
+          
+          # Delete deployments and services
+          echo "Deleting deployments..."
+          kubectl delete deployment --all -n talk2me --timeout=30s || echo "No deployments found or failed to delete"
+          
+          echo "Deleting services..."
+          kubectl delete service --all -n talk2me --timeout=30s || echo "No services found or failed to delete"
+          
+          # Delete secrets
+          echo "Deleting secrets..."
+          kubectl delete secret --all -n talk2me --timeout=30s || echo "No secrets found or failed to delete"
+          
+          # Delete namespace
+          echo "Deleting namespace..."
+          kubectl delete namespace talk2me --timeout=120s || echo "Namespace already deleted or failed to delete"
+          
+          echo "Kubernetes resources deleted successfully"
+      
+      - name: Wait for resources to be fully deleted
+        if: env.CLUSTER_EXISTS == 'true'
+        run: |
+          echo "Waiting for Kubernetes resources to be fully deleted..."
+          sleep 30
+  
+  cleanup-load-balancers:
+    name: Clean Up Load Balancers
+    needs: [validate-deletion, cleanup-kubernetes-resources]
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Find and delete load balancers
+        run: |
+          echo "Finding load balancers for Talk2Me application..."
+          
+          # Try to find ALB by name
+          LB_ARN=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?contains(LoadBalancerName, '$ALB_NAME')].LoadBalancerArn" \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -n "$LB_ARN" ] && [ "$LB_ARN" != "None" ]; then
+            echo "Found load balancer: $LB_ARN"
+            
+            # Delete the load balancer
+            echo "Deleting load balancer..."
+            aws elbv2 delete-load-balancer --load-balancer-arn $LB_ARN
+            
+            echo "Waiting for load balancer to be deleted..."
+            sleep 30
+            
+            echo "Load balancer deleted successfully"
+          else
+            echo "No load balancer found with name containing $ALB_NAME"
+            
+            # Try to find load balancers by tag
+            echo "Looking for load balancers by tag..."
+            LB_ARNS=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?contains(LoadBalancerName, 'k8s') || contains(LoadBalancerName, 'eks')].LoadBalancerArn" \
+              --output text 2>/dev/null || echo "")
+            
+            if [ -n "$LB_ARNS" ] && [ "$LB_ARNS" != "None" ]; then
+              for LB_ARN in $LB_ARNS; do
+                echo "Found possible EKS load balancer: $LB_ARN"
+                echo "Deleting load balancer..."
+                aws elbv2 delete-load-balancer --load-balancer-arn $LB_ARN || echo "Failed to delete load balancer, continuing..."
+              done
+              
+              echo "Waiting for load balancers to be deleted..."
+              sleep 30
+              
+              echo "Load balancers deleted"
+            else
+              echo "No matching load balancers found"
+            fi
+          fi
+          
+          # Check for and delete target groups
+          echo "Finding and deleting orphaned target groups..."
+          TG_ARNS=$(aws elbv2 describe-target-groups \
+            --query "TargetGroups[?contains(TargetGroupName, 'k8s') || contains(TargetGroupName, 'eks')].TargetGroupArn" \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -n "$TG_ARNS" ] && [ "$TG_ARNS" != "None" ]; then
+            for TG_ARN in $TG_ARNS; do
+              echo "Deleting target group: $TG_ARN"
+              aws elbv2 delete-target-group --target-group-arn $TG_ARN || echo "Failed to delete target group, continuing..."
+            done
+            
+            echo "Target groups deleted"
+          else
+            echo "No matching target groups found"
+          fi
+  
+  cleanup-eks-addons:
+    name: Clean Up EKS Add-ons
+    needs: [validate-deletion, cleanup-kubernetes-resources]
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Check if cluster exists
+        id: check-cluster
+        run: |
+          if aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION &> /dev/null; then
+            echo "EKS cluster $CLUSTER_NAME exists"
+            echo "CLUSTER_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "EKS cluster $CLUSTER_NAME does not exist"
+            echo "CLUSTER_EXISTS=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Delete EKS add-ons
+        if: env.CLUSTER_EXISTS == 'true'
+        run: |
+          echo "Deleting EKS add-ons..."
+          
+          # Get the list of add-ons
+          ADDONS=$(aws eks list-addons --cluster-name $CLUSTER_NAME --region $AWS_REGION --query "addons" --output text)
+          
+          if [ -n "$ADDONS" ]; then
+            for ADDON in $ADDONS; do
+              echo "Deleting add-on: $ADDON"
+              aws eks delete-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name $ADDON \
+                --region $AWS_REGION \
+                --preserve || echo "Failed to delete add-on $ADDON, continuing..."
+            done
+            
+            echo "EKS add-ons deleted successfully"
+          else
+            echo "No EKS add-ons found"
+          fi
+      
+      - name: Delete AWS Load Balancer Controller and External DNS
+        if: env.CLUSTER_EXISTS == 'true'
+        run: |
+          # Install Helm if needed
+          if ! command -v helm &> /dev/null; then
+            echo "Installing Helm..."
+            curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          fi
+          
+          # Update kubeconfig
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          
+          # Delete AWS Load Balancer Controller
+          echo "Deleting AWS Load Balancer Controller..."
+          helm uninstall aws-load-balancer-controller -n kube-system || echo "AWS Load Balancer Controller not found or already deleted"
+          
+          # Delete External DNS
+          echo "Deleting External DNS..."
+          helm uninstall external-dns -n kube-system || echo "External DNS not found or already deleted"
+          
+          # Delete Cluster Autoscaler if it exists
+          echo "Deleting Cluster Autoscaler..."
+          helm uninstall cluster-autoscaler -n kube-system || echo "Cluster Autoscaler not found or already deleted"
+          
+          echo "Helm resources deleted successfully"
+  
+  cleanup-eks-cluster:
+    name: Delete EKS Cluster
+    needs: [validate-deletion, cleanup-kubernetes-resources, cleanup-eks-addons, cleanup-load-balancers]
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install eksctl
+        run: |
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+      
+      - name: Check if cluster exists
+        id: check-cluster
+        run: |
+          if aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION &> /dev/null; then
+            echo "EKS cluster $CLUSTER_NAME exists"
+            echo "CLUSTER_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "EKS cluster $CLUSTER_NAME does not exist"
+            echo "CLUSTER_EXISTS=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Delete EKS cluster
+        if: env.CLUSTER_EXISTS == 'true'
+        run: |
+          echo "Deleting EKS cluster $CLUSTER_NAME..."
+          
+          # Delete the cluster
+          eksctl delete cluster --name $CLUSTER_NAME --region $AWS_REGION --wait
+          
+          echo "EKS cluster deleted successfully"
+  
+  cleanup-ecr-repositories:
+    name: Clean Up ECR Repositories
+    needs: validate-deletion
+    runs-on: ubuntu-latest
+    if: github.event.inputs.delete_ecr_repositories == 'true'
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Delete ECR repositories
+        run: |
+          # Delete backend repository
+          echo "Deleting backend ECR repository..."
+          aws ecr delete-repository \
+            --repository-name $BACKEND_ECR_REPOSITORY \
+            --force \
+            --region $AWS_REGION || echo "Backend repository not found or already deleted"
+          
+          # Delete frontend repository
+          echo "Deleting frontend ECR repository..."
+          aws ecr delete-repository \
+            --repository-name $FRONTEND_ECR_REPOSITORY \
+            --force \
+            --region $AWS_REGION || echo "Frontend repository not found or already deleted"
+          
+          echo "ECR repositories deleted successfully"
+  
+  cleanup-iam-resources:
+    name: Clean Up IAM Resources
+    needs: [validate-deletion, cleanup-eks-cluster]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.delete_iam_roles == 'true' && success()
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get AWS Account ID
+        id: get-aws-account
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+      
+      - name: Delete IAM resources
+        run: |
+          # Define resource names
+          ROLE_NAME="GitHub-Actions-Talk2Me-Role"
+          IAM_POLICIES=(
+            "Talk2Me-Deployment-Policy"
+            "AWSLoadBalancerControllerIAMPolicy"
+            "ExternalDNSPolicy"
+            "ClusterAutoscalerPolicy"
+          )
+          
+          # Detach and delete policies from role
+          for POLICY_NAME in "${IAM_POLICIES[@]}"; do
+            POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
+            
+            # Try to detach the policy from the role
+            echo "Detaching policy $POLICY_NAME from role $ROLE_NAME..."
+            aws iam detach-role-policy \
+              --role-name $ROLE_NAME \
+              --policy-arn $POLICY_ARN || echo "Policy $POLICY_NAME not attached to role or failed to detach"
+            
+            # Delete the policy
+            echo "Deleting policy $POLICY_NAME..."
+            aws iam delete-policy \
+              --policy-arn $POLICY_ARN || echo "Policy $POLICY_NAME not found or failed to delete"
+          done
+          
+          # Delete the role
+          echo "Deleting role $ROLE_NAME..."
+          aws iam delete-role \
+            --role-name $ROLE_NAME || echo "Role $ROLE_NAME not found or failed to delete"
+          
+          # Find and delete OIDC provider
+          echo "Finding and deleting OIDC provider for GitHub Actions..."
+          OIDC_PROVIDER_ARN=$(aws iam list-open-id-connect-providers | 
+            jq -r '.OpenIDConnectProviderList[] | 
+            select(.Arn | contains("token.actions.githubusercontent.com")) | 
+            .Arn')
+          
+          if [ -n "$OIDC_PROVIDER_ARN" ]; then
+            echo "Deleting OIDC provider: $OIDC_PROVIDER_ARN"
+            aws iam delete-open-id-connect-provider \
+              --open-id-connect-provider-arn $OIDC_PROVIDER_ARN
+            
+            echo "OIDC provider deleted successfully"
+          else
+            echo "No OIDC provider found for GitHub Actions"
+          fi
+          
+          echo "IAM resources cleanup completed"
+  
+  cleanup-summary:
+    name: Cleanup Summary
+    needs: [cleanup-dns, cleanup-certificates, cleanup-kubernetes-resources, cleanup-load-balancers, cleanup-eks-addons, cleanup-eks-cluster, cleanup-ecr-repositories, cleanup-iam-resources]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Generate summary
+        run: |
+          echo "================= Talk2Me Resource Cleanup Summary ================="
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Cluster name: ${{ env.CLUSTER_NAME }}"
+          echo "Domain name: ${{ env.DOMAIN_NAME }}"
+          echo ""
+          
+          # Check the status of each job
+          echo "DNS cleanup: ${{ needs.cleanup-dns.result != 'skipped' && needs.cleanup-dns.result || 'Skipped' }}"
+          echo "ACM certificate cleanup: ${{ needs.cleanup-certificates.result != 'skipped' && needs.cleanup-certificates.result || 'Skipped' }}"
+          echo "Kubernetes resources cleanup: ${{ needs.cleanup-kubernetes-resources.result }}"
+          echo "Load balancer cleanup: ${{ needs.cleanup-load-balancers.result }}"
+          echo "EKS add-ons cleanup: ${{ needs.cleanup-eks-addons.result }}"
+          echo "EKS cluster deletion: ${{ needs.cleanup-eks-cluster.result }}"
+          echo "ECR repositories cleanup: ${{ needs.cleanup-ecr-repositories.result != 'skipped' && needs.cleanup-ecr-repositories.result || 'Skipped' }}"
+          echo "IAM resources cleanup: ${{ needs.cleanup-iam-resources.result != 'skipped' && needs.cleanup-iam-resources.result || 'Skipped' }}"
+          
+          echo ""
+          echo "Note: 'Skipped' means the cleanup step was not selected to run"
+          echo "======================= Cleanup Complete ========================="

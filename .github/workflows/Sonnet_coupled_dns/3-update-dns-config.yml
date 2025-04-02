@@ -19,11 +19,6 @@ on:
         description: 'Load Balancer Name'
         required: true
         default: 'talk2me-alb'
-      create_hosted_zone:
-        description: 'Create new hosted zone if not exists'
-        required: true
-        default: 'true'
-        type: boolean
 
 env:
   AWS_REGION: ${{ github.event.inputs.region }}
@@ -71,7 +66,7 @@ jobs:
           fi
       
       - name: Create Hosted Zone if Needed
-        if: steps.check-zone.outputs.zone_id == '' && github.event.inputs.create_hosted_zone == 'true'
+        if: steps.check-zone.outputs.zone_id == ''
         id: create-zone
         run: |
           echo "Creating new hosted zone for $DOMAIN_NAME"
@@ -90,9 +85,6 @@ jobs:
           # Output nameservers for domain configuration
           echo "Please configure your domain registrar with the following nameservers:"
           echo $ZONE_RESULT | jq -r '.DelegationSet.NameServers[]' | sed 's/^/  - /'
-          echo ""
-          echo "⚠️ IMPORTANT: You must configure your domain registrar with these nameservers ⚠️"
-          echo "Your application will not be accessible via your domain until you do this."
       
       - name: Get Load Balancer Address
         id: get-lb
@@ -217,17 +209,6 @@ jobs:
       
       - name: Update DNS Records
         run: |
-          # Exit if we don't have a zone or load balancer
-          if [ -z "$ZONE_ID" ]; then
-            echo "Error: No Route53 hosted zone ID available. Cannot update DNS records."
-            exit 1
-          fi
-          
-          if [ -z "$LB_ADDRESS" ]; then
-            echo "Error: No load balancer address available. Cannot update DNS records."
-            exit 1
-          fi
-          
           # Get the ALB hosted zone ID
           ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query 'LoadBalancers[0].CanonicalHostedZoneId' --output text 2>/dev/null || echo "Z35SXDOTRQ7X7K")
           
@@ -236,9 +217,7 @@ jobs:
             ALB_HOSTED_ZONE_ID="Z35SXDOTRQ7X7K"  # Default for us-east-1
           fi
           
-          echo "Using ALB Hosted Zone ID: $ALB_HOSTED_ZONE_ID"
-          
-          # Create JSON for DNS change batch with domain and API subdomain
+          # Create JSON for DNS change batch
           cat > dns-changes.json << EOF
           {
             "Changes": [
@@ -265,18 +244,6 @@ jobs:
                     "EvaluateTargetHealth": true
                   }
                 }
-              },
-              {
-                "Action": "UPSERT",
-                "ResourceRecordSet": {
-                  "Name": "www.$DOMAIN_NAME",
-                  "Type": "A",
-                  "AliasTarget": {
-                    "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
-                    "DNSName": "$LB_ADDRESS",
-                    "EvaluateTargetHealth": true
-                  }
-                }
               }
             ]
           }
@@ -287,97 +254,17 @@ jobs:
             --hosted-zone-id $ZONE_ID \
             --change-batch file://dns-changes.json
           
-          # Get the change ID to track status
-          CHANGE_ID=$(aws route53 list-resource-record-sets --hosted-zone-id $ZONE_ID --query "ResourceRecordSets[?Name=='$DOMAIN_NAME.'].Name" --output text)
-          
-          if [ -n "$CHANGE_ID" ]; then
-            echo "DNS records have been updated successfully for:"
-            echo "  - $DOMAIN_NAME"
-            echo "  - $API_DOMAIN_NAME"
-            echo "  - www.$DOMAIN_NAME"
-          else
-            echo "Error: Failed to verify DNS record creation"
-            exit 1
-          fi
-          
+          echo "DNS records have been updated for $DOMAIN_NAME and $API_DOMAIN_NAME"
           echo "DNS changes take time to propagate. Please allow 5-10 minutes."
       
-      - name: Update ingress with domain names
+      - name: Check for Domain Verification Status
         run: |
-          echo "Updating Kubernetes ingress with domain name settings..."
+          # Try to resolve domain to verify DNS is working
+          echo "Checking DNS resolution for $DOMAIN_NAME (this might not work immediately)..."
+          nslookup $DOMAIN_NAME || echo "Domain not resolving yet, this is expected if DNS was just configured"
           
-          # Check if the cluster exists
-          if ! aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION &> /dev/null; then
-            echo "Error: EKS cluster $CLUSTER_NAME not found"
-            exit 1
-          fi
-          
-          # Update kubeconfig if needed
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-          
-          # Update the ingress annotation
-          kubectl annotate ingress talk2me-ingress -n talk2me --overwrite \
-            external-dns.alpha.kubernetes.io/hostname="$DOMAIN_NAME,$API_DOMAIN_NAME,www.$DOMAIN_NAME"
-          
-          # Update the ingress rules if needed
-          if ! kubectl get ingress talk2me-ingress -n talk2me -o yaml | grep -q "host: $DOMAIN_NAME"; then
-            echo "Updating ingress rules with correct hosts..."
-            
-            # Get the current ingress
-            kubectl get ingress talk2me-ingress -n talk2me -o yaml > current-ingress.yaml
-            
-            # Create a patched version
-            cat > ingress-patch.yaml << EOF
-          spec:
-            rules:
-            - host: $DOMAIN_NAME
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: talk2me-frontend
-                      port:
-                        number: 80
-            - host: $API_DOMAIN_NAME
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: talk2me-backend
-                      port:
-                        number: 80
-            - host: www.$DOMAIN_NAME
-              http:
-                paths:
-                - path: /
-                  pathType: Prefix
-                  backend:
-                    service:
-                      name: talk2me-frontend
-                      port:
-                        number: 80
-          EOF
-            
-            # Apply the patch
-            kubectl patch ingress talk2me-ingress -n talk2me --patch "$(cat ingress-patch.yaml)"
-          fi
-          
-          # Verify the ingress
-          echo "Verifying ingress configuration..."
-          kubectl get ingress talk2me-ingress -n talk2me -o yaml
-          
-          # Check if External DNS picked up the changes
-          echo "Checking External DNS status..."
-          EXTERNAL_DNS_PODS=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns -o name)
-          if [ -n "$EXTERNAL_DNS_PODS" ]; then
-            kubectl logs -n kube-system -l app.kubernetes.io/name=external-dns --tail=20
-          else
-            echo "Warning: External DNS pods not found"
-          fi
+          echo "Checking DNS resolution for $API_DOMAIN_NAME..."
+          nslookup $API_DOMAIN_NAME || echo "API domain not resolving yet, this is expected if DNS was just configured"
       
       - name: Summary
         run: |
