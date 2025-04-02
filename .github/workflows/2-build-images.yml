@@ -65,13 +65,17 @@ jobs:
             --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
 
   login-ecr:
-    needs: create-ecr
-    runs-on: ubuntu-latest
-    outputs:
-      registry: ${{ steps.login.outputs.registry }}
-    steps:
-      - id: login
-        uses: aws-actions/amazon-ecr-login@v1
+   needs: setup
+   runs-on: ubuntu-latest
+   steps:
+   - uses: aws-actions/configure-aws-credentials@v2
+     with:
+       aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+       aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+       aws-region: ${{ env.AWS_REGION }}
+
+   - uses: aws-actions/amazon-ecr-login@v1
+
 
   build-backend:
     needs: login-ecr
