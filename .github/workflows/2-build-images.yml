@@ -28,17 +28,14 @@ jobs:
     outputs:
       aws_account_id: ${{ steps.get-aws-account.outputs.account_id }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Get AWS Account ID
-        id: get-aws-account
+      - id: get-aws-account
         run: |
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
@@ -47,10 +44,23 @@ jobs:
     needs: setup-aws
     runs-on: ubuntu-latest
     steps:
-      - name: Create ECR Repositories & Lifecycle Policies
-        run: |
-          # same ECR repo creation and lifecycle policy logic as original
-    # Uses same AWS credentials block
+      - uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - run: |
+          aws ecr describe-repositories --repository-names $BACKEND_ECR_REPOSITORY 2>/dev/null || \
+          aws ecr create-repository --repository-name $BACKEND_ECR_REPOSITORY --image-scanning-configuration scanOnPush=true
+
+          aws ecr describe-repositories --repository-names $FRONTEND_ECR_REPOSITORY 2>/dev/null || \
+          aws ecr create-repository --repository-name $FRONTEND_ECR_REPOSITORY --image-scanning-configuration scanOnPush=true
+
+          aws ecr put-lifecycle-policy --repository-name $BACKEND_ECR_REPOSITORY \
+            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+
+          aws ecr put-lifecycle-policy --repository-name $FRONTEND_ECR_REPOSITORY \
+            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
 
   login-ecr:
     needs: create-ecr
@@ -58,8 +68,7 @@ jobs:
     outputs:
       registry: ${{ steps.login.outputs.registry }}
     steps:
-      - name: Login to ECR
-        id: login
+      - id: login
         uses: aws-actions/amazon-ecr-login@v1
 
   build-backend:
@@ -70,7 +79,13 @@ jobs:
     steps:
       - name: Build and Push Backend
         id: push
-        # same backend build & push logic
+        env:
+          ECR_REGISTRY: ${{ needs.login-ecr.outputs.registry }}
+        run: |
+          cd backend
+          docker build -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
   build-frontend:
     needs: login-ecr
@@ -80,11 +95,27 @@ jobs:
     steps:
       - name: Build and Push Frontend
         id: push
-        # same frontend build & push logic
+        env:
+          ECR_REGISTRY: ${{ needs.login-ecr.outputs.registry }}
+        run: |
+          cd frontend
+          docker build -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
   save-artifacts:
     needs: [build-backend, build-frontend, setup-aws]
     runs-on: ubuntu-latest
     steps:
-      - name: Save image info
-        # same artifact saving logic
+      - run: |
+          mkdir -p ./artifacts
+          echo "BACKEND_IMAGE=${{ needs.build-backend.outputs.image }}" > ./artifacts/image-info.env
+          echo "FRONTEND_IMAGE=${{ needs.build-frontend.outputs.image }}" >> ./artifacts/image-info.env
+          echo "AWS_ACCOUNT_ID=${{ needs.setup-aws.outputs.aws_account_id }}" >> ./artifacts/image-info.env
+          echo "IMAGE_TAG=${{ env.IMAGE_TAG }}" >> ./artifacts/image-info.env
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: image-info
+          path: ./artifacts/image-info.env
+          retention-days: 1
