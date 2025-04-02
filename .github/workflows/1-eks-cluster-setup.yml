@@ -114,40 +114,40 @@ jobs:
           
           # Verify kubeconfig works
           if ! kubectl cluster-info; then
-            echo "Failed to connect to cluster. Fixing kubeconfig..."
+            echo "Failed to connect to cluster. Creating manual kubeconfig..."
             CLUSTER_ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.endpoint" --output text)
             CA_DATA=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.certificateAuthority.data" --output text)
             
             mkdir -p ~/.kube
-            cat > ~/.kube/config << EOF
-            apiVersion: v1
-            clusters:
-            - cluster:
-                certificate-authority-data: ${CA_DATA}
-                server: ${CLUSTER_ENDPOINT}
-              name: ${CLUSTER_NAME}
-            contexts:
-            - context:
-                cluster: ${CLUSTER_NAME}
-                user: ${CLUSTER_NAME}
-              name: ${CLUSTER_NAME}
-            current-context: ${CLUSTER_NAME}
-            kind: Config
-            preferences: {}
-            users:
-            - name: ${CLUSTER_NAME}
-              user:
-                exec:
-                  apiVersion: client.authentication.k8s.io/v1beta1
-                  command: aws
-                  args:
-                  - eks
-                  - get-token
-                  - --cluster-name
-                  - ${CLUSTER_NAME}
-                  - --region
-                  - ${AWS_REGION}
-            EOF
+            
+            # Create kubeconfig step by step
+            echo "apiVersion: v1" > ~/.kube/config
+            echo "clusters:" >> ~/.kube/config
+            echo "- cluster:" >> ~/.kube/config
+            echo "    certificate-authority-data: ${CA_DATA}" >> ~/.kube/config
+            echo "    server: ${CLUSTER_ENDPOINT}" >> ~/.kube/config
+            echo "  name: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "contexts:" >> ~/.kube/config
+            echo "- context:" >> ~/.kube/config
+            echo "    cluster: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "    user: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "  name: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "current-context: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "kind: Config" >> ~/.kube/config
+            echo "preferences: {}" >> ~/.kube/config
+            echo "users:" >> ~/.kube/config
+            echo "- name: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "  user:" >> ~/.kube/config
+            echo "    exec:" >> ~/.kube/config
+            echo "      apiVersion: client.authentication.k8s.io/v1beta1" >> ~/.kube/config
+            echo "      command: aws" >> ~/.kube/config
+            echo "      args:" >> ~/.kube/config
+            echo "      - eks" >> ~/.kube/config
+            echo "      - get-token" >> ~/.kube/config
+            echo "      - --cluster-name" >> ~/.kube/config
+            echo "      - ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "      - --region" >> ~/.kube/config
+            echo "      - ${AWS_REGION}" >> ~/.kube/config
             
             # Verify again
             if ! kubectl cluster-info; then
@@ -399,7 +399,7 @@ jobs:
       - name: Setup External DNS (for Route53)
         run: |
           # Create IAM policy for External DNS
-          cat > external-dns-policy.json << EOF
+          cat > external-dns-policy.json << 'EOF'
           {
             "Version": "2012-10-17",
             "Statement": [
@@ -489,7 +489,7 @@ jobs:
           echo "Setting up Cluster Autoscaler..."
           
           # Create IAM policy for Cluster Autoscaler
-          cat > cluster-autoscaler-policy.json << EOF
+          cat > cluster-autoscaler-policy.json << 'EOF'
           {
             "Version": "2012-10-17",
             "Statement": [
@@ -596,4 +596,3 @@ jobs:
           echo "2. After deploying, verify the application is working properly"
           echo ""
           echo "Your EKS cluster is now ready for application deployment!"
-          
