@@ -1,4 +1,4 @@
-name: 4. Cleanup Resources
+name: 5. Cleanup Resources
 
 on:
   workflow_dispatch:
