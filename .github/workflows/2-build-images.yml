@@ -81,9 +81,39 @@ jobs:
           echo "COMBINED_TAG=$COMBINED_TAG" >> $GITHUB_ENV
           echo "combined_tag=$COMBINED_TAG" >> $GITHUB_OUTPUT
       
+      - name: Setup Docker with experimental features
+        run: |
+          # Enable Docker experimental features to use --squash
+          echo '{"experimental": true}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          # Wait for Docker to restart
+          sleep 5
+          docker info | grep Experimental
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
+      
+      - name: Remove all existing images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          # Delete all images with the target tags from ECR
+          echo "Removing existing images from ECR for $BACKEND_ECR_REPOSITORY:$IMAGE_TAG..."
+          aws ecr batch-delete-image \
+            --repository-name $BACKEND_ECR_REPOSITORY \
+            --image-ids imageTag=$IMAGE_TAG \
+            2>/dev/null || true
+            
+          echo "Removing existing images from ECR for $FRONTEND_ECR_REPOSITORY:$IMAGE_TAG..."
+          aws ecr batch-delete-image \
+            --repository-name $FRONTEND_ECR_REPOSITORY \
+            --image-ids imageTag=$IMAGE_TAG \
+            2>/dev/null || true
+          
+          # Clean up any local Docker images to ensure fresh build
+          echo "Cleaning local Docker environment..."
+          docker system prune -af
       
       - name: Build and Push Backend Image
         id: build-backend
@@ -102,36 +132,32 @@ jobs:
           echo "Found backend Dockerfile at: $BACKEND_DOCKERFILE"
           echo "Building from directory: $BACKEND_DIR"
           
-          # Generate a unique build timestamp
-          BUILD_TIMESTAMP=$(date +%s)
+          # Generate a unique build ID
+          BUILD_ID=$(date +%s)
           
-          # Create temporary Dockerfile with ARG to invalidate cache
-          cat > "${BACKEND_DIR}/Dockerfile.timestamp" << EOF
-          # Add build timestamp to invalidate cache
-          ARG BUILD_TIMESTAMP=$BUILD_TIMESTAMP
-          
+          # Create temporary Dockerfile with a no-op instruction to force rebuild
+          cat > "${BACKEND_DIR}/Dockerfile.rebuild" << EOF
+          # Add build ID to force rebuild: $BUILD_ID
           $(cat "$BACKEND_DOCKERFILE")
+          
+          # Add no-op instruction at the end to force a new layer
+          RUN echo "Build ID: $BUILD_ID" > /build-id
           EOF
           
-          # Build with both the user-specified tag and the SHA tag, forcing a clean build
-          docker build --no-cache --pull --force-rm \
-            --build-arg BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
-            -f "${BACKEND_DIR}/Dockerfile.timestamp" \
-            -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG \
+          # Export image name for use in job outputs
+          BACKEND_IMAGE="$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG"
+          
+          # Build with squash option to combine all layers into one
+          docker build --no-cache --force-rm --squash \
+            -f "${BACKEND_DIR}/Dockerfile.rebuild" \
+            -t $BACKEND_IMAGE \
             "$BACKEND_DIR"
           
-          # Clean any existing images with these tags in ECR (ignore errors if they don't exist)
-          aws ecr batch-delete-image \
-            --repository-name $BACKEND_ECR_REPOSITORY \
-            --image-ids imageTag=$IMAGE_TAG imageTag=$COMBINED_TAG 2>/dev/null || true
+          # Push to ECR
+          docker push $BACKEND_IMAGE
           
-          # Push both tags
-          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG
-          
-          # Use the combined tag for deployment
-          echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG" >> $GITHUB_OUTPUT
+          # Output image reference for deployment
+          echo "image=$BACKEND_IMAGE" >> $GITHUB_OUTPUT
       
       - name: Build and Push Frontend Image
         id: build-frontend
@@ -151,37 +177,33 @@ jobs:
           echo "Found frontend Dockerfile at: $FRONTEND_DOCKERFILE"
           echo "Building from directory: $FRONTEND_DIR"
           
-          # Generate a unique build timestamp
-          BUILD_TIMESTAMP=$(date +%s)
+          # Generate a unique build ID
+          BUILD_ID=$(date +%s)
           
-          # Create temporary Dockerfile with ARG to invalidate cache
-          cat > "${FRONTEND_DIR}/Dockerfile.timestamp" << EOF
-          # Add build timestamp to invalidate cache
-          ARG BUILD_TIMESTAMP=$BUILD_TIMESTAMP
-          
+          # Create temporary Dockerfile with a no-op instruction to force rebuild
+          cat > "${FRONTEND_DIR}/Dockerfile.rebuild" << EOF
+          # Add build ID to force rebuild: $BUILD_ID
           $(cat "$FRONTEND_DOCKERFILE")
+          
+          # Add no-op instruction at the end to force a new layer
+          RUN echo "Build ID: $BUILD_ID" > /build-id
           EOF
           
-          # Build with both the user-specified tag and the SHA tag, forcing a clean build
-          docker build --no-cache --pull --force-rm \
-            --build-arg BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
+          # Export image name for use in job outputs
+          FRONTEND_IMAGE="$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG"
+          
+          # Build with squash option to combine all layers into one
+          docker build --no-cache --force-rm --squash \
+            -f "${FRONTEND_DIR}/Dockerfile.rebuild" \
             --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
-            -f "${FRONTEND_DIR}/Dockerfile.timestamp" \
-            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG \
+            -t $FRONTEND_IMAGE \
             "$FRONTEND_DIR"
           
-          # Clean any existing images with these tags in ECR (ignore errors if they don't exist)
-          aws ecr batch-delete-image \
-            --repository-name $FRONTEND_ECR_REPOSITORY \
-            --image-ids imageTag=$IMAGE_TAG imageTag=$COMBINED_TAG 2>/dev/null || true
+          # Push to ECR
+          docker push $FRONTEND_IMAGE
           
-          # Push both tags
-          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG
-          
-          # Use the combined tag for deployment
-          echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG" >> $GITHUB_OUTPUT
+          # Output image reference for deployment
+          echo "image=$FRONTEND_IMAGE" >> $GITHUB_OUTPUT
       
       - name: Summary of Build Step
         run: |
