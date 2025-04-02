@@ -1,0 +1,291 @@
+name: 3. Update DNS Configuration
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      domain_name:
+        description: 'Domain Name'
+        required: true
+        default: 'talk2me-gen-z.com'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      alb_name:
+        description: 'Load Balancer Name'
+        required: true
+        default: 'talk2me-alb'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  DOMAIN_NAME: ${{ github.event.inputs.domain_name }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  ALB_NAME: ${{ github.event.inputs.alb_name }}
+  API_DOMAIN_NAME: api.${{ github.event.inputs.domain_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  update-dns:
+    name: Update Route53 DNS Configuration
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Check Route53 Hosted Zone
+        id: check-zone
+        run: |
+          echo "Checking if Route53 hosted zone exists for $DOMAIN_NAME..."
+          
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN_NAME --query "HostedZones[?Name=='$DOMAIN_NAME.'].Id" --output text | cut -d/ -f3)
+          
+          if [ -n "$ZONE_ID" ]; then
+            echo "Hosted zone exists with ID: $ZONE_ID"
+            echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+            echo "ZONE_EXISTS=true" >> $GITHUB_ENV
+            echo "zone_id=$ZONE_ID" >> $GITHUB_OUTPUT
+          else
+            echo "Hosted zone does not exist"
+            echo "ZONE_EXISTS=false" >> $GITHUB_ENV
+            echo "zone_id=" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create Hosted Zone if Needed
+        if: steps.check-zone.outputs.zone_id == ''
+        id: create-zone
+        run: |
+          echo "Creating new hosted zone for $DOMAIN_NAME"
+          
+          ZONE_RESULT=$(aws route53 create-hosted-zone \
+            --name $DOMAIN_NAME \
+            --caller-reference "talk2me-$(date +%s)" \
+            --hosted-zone-config Comment="Hosted zone for Talk2Me application")
+          
+          # Extract zone ID from response
+          ZONE_ID=$(echo $ZONE_RESULT | jq -r '.HostedZone.Id' | cut -d/ -f3)
+          echo "Created new hosted zone with ID: $ZONE_ID"
+          echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+          echo "zone_id=$ZONE_ID" >> $GITHUB_OUTPUT
+          
+          # Output nameservers for domain configuration
+          echo "Please configure your domain registrar with the following nameservers:"
+          echo $ZONE_RESULT | jq -r '.DelegationSet.NameServers[]' | sed 's/^/  - /'
+      
+      - name: Get Load Balancer Address
+        id: get-lb
+        run: |
+          echo "Getting load balancer address..."
+          
+          # Try to get the address from ingress
+          LB_ADDRESS=$(kubectl get ingress talk2me-ingress -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+          
+          # If not available from ingress, try AWS directly
+          if [ -z "$LB_ADDRESS" ]; then
+            echo "LB address not found in ingress, checking AWS directly..."
+            LB_ADDRESS=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
+          fi
+          
+          if [ -n "$LB_ADDRESS" ] && [ "$LB_ADDRESS" != "None" ]; then
+            echo "Load balancer address: $LB_ADDRESS"
+            echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
+            echo "lb_address=$LB_ADDRESS" >> $GITHUB_OUTPUT
+          else
+            echo "Load balancer address not found"
+            echo "lb_address=" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+      
+      - name: Get Certificate Status
+        run: |
+          echo "Checking certificate status for $DOMAIN_NAME..."
+          
+          # Try to find certificate for domain in ACM
+          CERT_ARN=$(aws acm list-certificates --query "CertificateSummaryList[?contains(DomainName, '*.${DOMAIN_NAME}') || DomainName=='${DOMAIN_NAME}'].CertificateArn" --output text | head -1)
+          
+          if [ -n "$CERT_ARN" ]; then
+            echo "Found certificate: $CERT_ARN"
+            
+            # Check certificate status
+            CERT_STATUS=$(aws acm describe-certificate --certificate-arn $CERT_ARN --query "Certificate.Status" --output text)
+            echo "Certificate status: $CERT_STATUS"
+            
+            # If certificate is pending validation, add validation records
+            if [ "$CERT_STATUS" == "PENDING_VALIDATION" ]; then
+              echo "Certificate is pending validation. Adding validation records..."
+              
+              # Get validation records
+              VALIDATION_RECORDS=$(aws acm describe-certificate \
+                --certificate-arn $CERT_ARN \
+                --query "Certificate.DomainValidationOptions[].ResourceRecord" \
+                --output json)
+              
+              # Create validation records in Route53
+              echo $VALIDATION_RECORDS | jq -c '.[]' | while read -r record; do
+                NAME=$(echo $record | jq -r '.Name')
+                VALUE=$(echo $record | jq -r '.Value')
+                TYPE=$(echo $record | jq -r '.Type')
+                
+                echo "Adding validation record: $NAME -> $VALUE"
+                
+                aws route53 change-resource-record-sets \
+                  --hosted-zone-id $ZONE_ID \
+                  --change-batch '{
+                    "Changes": [{
+                      "Action": "UPSERT",
+                      "ResourceRecordSet": {
+                        "Name": "'$NAME'",
+                        "Type": "'$TYPE'",
+                        "TTL": 300,
+                        "ResourceRecords": [{"Value": "'$VALUE'"}]
+                      }
+                    }]
+                  }'
+              done
+              
+              echo "DNS validation records added. Certificate validation will take some time to complete."
+            fi
+          else
+            echo "No certificate found for $DOMAIN_NAME"
+            echo "Creating new wildcard certificate..."
+            
+            # Create new certificate
+            NEW_CERT_ARN=$(aws acm request-certificate \
+              --domain-name "$DOMAIN_NAME" \
+              --validation-method DNS \
+              --subject-alternative-names "*.$DOMAIN_NAME" \
+              --query CertificateArn --output text)
+            
+            echo "Created new certificate: $NEW_CERT_ARN"
+            
+            # Wait a moment for the certificate to be ready
+            sleep 5
+            
+            # Get validation records
+            VALIDATION_RECORDS=$(aws acm describe-certificate \
+              --certificate-arn $NEW_CERT_ARN \
+              --query "Certificate.DomainValidationOptions[].ResourceRecord" \
+              --output json)
+            
+            # Create validation records in Route53
+            echo $VALIDATION_RECORDS | jq -c '.[]' | while read -r record; do
+              NAME=$(echo $record | jq -r '.Name')
+              VALUE=$(echo $record | jq -r '.Value')
+              TYPE=$(echo $record | jq -r '.Type')
+              
+              echo "Adding validation record: $NAME -> $VALUE"
+              
+              aws route53 change-resource-record-sets \
+                --hosted-zone-id $ZONE_ID \
+                --change-batch '{
+                  "Changes": [{
+                    "Action": "UPSERT",
+                    "ResourceRecordSet": {
+                      "Name": "'$NAME'",
+                      "Type": "'$TYPE'",
+                      "TTL": 300,
+                      "ResourceRecords": [{"Value": "'$VALUE'"}]
+                    }
+                  }]
+                }'
+            done
+            
+            echo "DNS validation records added. Certificate validation will take some time to complete."
+          fi
+      
+      - name: Update DNS Records
+        run: |
+          # Get the ALB hosted zone ID
+          ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query 'LoadBalancers[0].CanonicalHostedZoneId' --output text 2>/dev/null || echo "Z35SXDOTRQ7X7K")
+          
+          # If we couldn't get the hosted zone ID, use the default for us-east-1
+          if [ -z "$ALB_HOSTED_ZONE_ID" ] || [ "$ALB_HOSTED_ZONE_ID" == "None" ]; then
+            ALB_HOSTED_ZONE_ID="Z35SXDOTRQ7X7K"  # Default for us-east-1
+          fi
+          
+          # Create JSON for DNS change batch
+          cat > dns-changes.json << EOF
+          {
+            "Changes": [
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$DOMAIN_NAME",
+                  "Type": "A",
+                  "AliasTarget": {
+                    "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
+                    "DNSName": "$LB_ADDRESS",
+                    "EvaluateTargetHealth": true
+                  }
+                }
+              },
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$API_DOMAIN_NAME",
+                  "Type": "A",
+                  "AliasTarget": {
+                    "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
+                    "DNSName": "$LB_ADDRESS",
+                    "EvaluateTargetHealth": true
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Apply the DNS changes
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id $ZONE_ID \
+            --change-batch file://dns-changes.json
+          
+          echo "DNS records have been updated for $DOMAIN_NAME and $API_DOMAIN_NAME"
+          echo "DNS changes take time to propagate. Please allow 5-10 minutes."
+      
+      - name: Check for Domain Verification Status
+        run: |
+          # Try to resolve domain to verify DNS is working
+          echo "Checking DNS resolution for $DOMAIN_NAME (this might not work immediately)..."
+          nslookup $DOMAIN_NAME || echo "Domain not resolving yet, this is expected if DNS was just configured"
+          
+          echo "Checking DNS resolution for $API_DOMAIN_NAME..."
+          nslookup $API_DOMAIN_NAME || echo "API domain not resolving yet, this is expected if DNS was just configured"
+      
+      - name: Summary
+        run: |
+          echo "=========== DNS Configuration Summary ==========="
+          echo "Domain: $DOMAIN_NAME"
+          echo "API Domain: $API_DOMAIN_NAME"
+          echo "Route53 Hosted Zone ID: $ZONE_ID"
+          echo "Load Balancer: $LB_ADDRESS"
+          echo ""
+          echo "DNS configuration is complete! The application should be accessible at:"
+          echo "  - Frontend: https://$DOMAIN_NAME"
+          echo "  - Backend API: https://$API_DOMAIN_NAME"
+          echo ""
+          echo "Important notes:"
+          echo "  1. DNS changes may take up to 48 hours to fully propagate worldwide"
+          echo "  2. SSL certificate validation may take up to 30 minutes to complete"
+          echo "  3. If you created a new certificate, please wait for validation to complete"
+          echo "     before accessing the site via HTTPS"
+          echo ""
+          echo "To verify the application is working:"
+          echo "  1. Wait a few minutes for DNS to start propagating"
+          echo "  2. Try accessing the frontend URL in your browser"
+          echo "  3. If HTTPS doesn't work immediately, try HTTP first"
+          echo "=========================================="
