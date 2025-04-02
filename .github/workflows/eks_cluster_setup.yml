@@ -69,6 +69,48 @@ jobs:
             --nodes-max $MAX_SIZE \
             --with-oidc \
             --managed
+      
+      - name: Tag subnets for Load Balancer Controller
+        run: |
+          echo "Tagging subnets for AWS Load Balancer Controller..."
+          
+          # Get VPC ID used by the EKS cluster
+          VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.resourcesVpcConfig.vpcId" --output text)
+          echo "EKS Cluster VPC ID: $VPC_ID"
+          
+          # Get all subnets in the VPC
+          SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[].SubnetId" --output text)
+          
+          # Identify public subnets (those with route to internet gateway)
+          for SUBNET_ID in $SUBNET_IDS; do
+            # Check if this subnet's route table has an internet gateway route
+            RT_ID=$(aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$SUBNET_ID" --query "RouteTables[0].RouteTableId" --output text)
+            
+            if [ -z "$RT_ID" ] || [ "$RT_ID" == "None" ]; then
+              # If there's no explicit association, get the main route table for the VPC
+              RT_ID=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" --query "RouteTables[0].RouteTableId" --output text)
+            fi
+            
+            # Check if this route table has an internet gateway route
+            IGW_ROUTE=$(aws ec2 describe-route-tables --route-table-ids $RT_ID --query "RouteTables[0].Routes[?GatewayId!=null] | [?starts_with(GatewayId, 'igw-')].DestinationCidrBlock" --output text)
+            
+            if [ -n "$IGW_ROUTE" ]; then
+              # This subnet has a route to an internet gateway - it's public
+              echo "Tagging public subnet $SUBNET_ID with kubernetes.io/role/elb=1"
+              aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/elb,Value=1
+              
+              # Check if the subnet also has the cluster tag, if so, also tag it for internal ELBs
+              CLUSTER_TAG=$(aws ec2 describe-subnets --subnet-ids $SUBNET_ID --query "Subnets[0].Tags[?Key==\`kubernetes.io/cluster/$CLUSTER_NAME\`].Value" --output text)
+              if [ -n "$CLUSTER_TAG" ]; then
+                echo "Tagging cluster subnet $SUBNET_ID with kubernetes.io/role/internal-elb=1"
+                aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/internal-elb,Value=1
+              fi
+            else
+              # This subnet doesn't have a route to an internet gateway - it's private
+              echo "Tagging private subnet $SUBNET_ID with kubernetes.io/role/internal-elb=1"
+              aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/internal-elb,Value=1
+            fi
+          done
             
       - name: Install AWS Load Balancer Controller
         run: |
@@ -103,6 +145,10 @@ jobs:
             --set serviceAccount.name=aws-load-balancer-controller \
             --set region=$AWS_REGION \
             -n kube-system
+          
+          # Wait for controller to be ready
+          echo "Waiting for AWS Load Balancer Controller to be ready..."
+          kubectl rollout status deployment aws-load-balancer-controller -n kube-system --timeout=180s
       
       - name: Setup External DNS (for Route53)
         run: |
@@ -172,3 +218,12 @@ jobs:
           kubectl create secret generic talk2me-secrets \
             --namespace talk2me \
             --from-literal=deepseek-api-key=${{ secrets.DEEPSEEK_API_KEY }}
+            
+      - name: Verify AWS Load Balancer Controller status
+        run: |
+          echo "Checking AWS Load Balancer Controller status..."
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          # Check controller logs
+          echo "AWS Load Balancer Controller logs:"
+          kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50
