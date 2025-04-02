@@ -48,6 +48,408 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          
+          # Verify kubeconfig works
+          if ! kubectl cluster-info; then
+            echo "Failed to connect to cluster. Creating manual kubeconfig..."
+            CLUSTER_ENDPOINT=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.endpoint" --output text)
+            CA_DATA=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.certificateAuthority.data" --output text)
+            
+            mkdir -p ~/.kube
+            
+            # Create kubeconfig step by step
+            echo "apiVersion: v1" > ~/.kube/config
+            echo "clusters:" >> ~/.kube/config
+            echo "- cluster:" >> ~/.kube/config
+            echo "    certificate-authority-data: ${CA_DATA}" >> ~/.kube/config
+            echo "    server: ${CLUSTER_ENDPOINT}" >> ~/.kube/config
+            echo "  name: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "contexts:" >> ~/.kube/config
+            echo "- context:" >> ~/.kube/config
+            echo "    cluster: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "    user: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "  name: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "current-context: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "kind: Config" >> ~/.kube/config
+            echo "preferences: {}" >> ~/.kube/config
+            echo "users:" >> ~/.kube/config
+            echo "- name: ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "  user:" >> ~/.kube/config
+            echo "    exec:" >> ~/.kube/config
+            echo "      apiVersion: client.authentication.k8s.io/v1beta1" >> ~/.kube/config
+            echo "      command: aws" >> ~/.kube/config
+            echo "      args:" >> ~/.kube/config
+            echo "      - eks" >> ~/.kube/config
+            echo "      - get-token" >> ~/.kube/config
+            echo "      - --cluster-name" >> ~/.kube/config
+            echo "      - ${CLUSTER_NAME}" >> ~/.kube/config
+            echo "      - --region" >> ~/.kube/config
+            echo "      - ${AWS_REGION}" >> ~/.kube/config
+            
+            # Verify again
+            if ! kubectl cluster-info; then
+              echo "Still unable to connect to cluster. Exiting."
+              exit 1
+            fi
+      
+      - name: Verify Application Endpoints
+        if: steps.get-lb.outputs.lb_address != 'not_found'
+        run: |
+          echo "Verifying application endpoints..."
+          
+          # Wait for DNS to propagate and service to be ready
+          echo "Waiting for load balancer to be ready..."
+          sleep 60
+          
+          # Try to access the frontend
+          CURL_ATTEMPTS=0
+          MAX_CURL_ATTEMPTS=5
+          FRONTEND_READY=false
+          
+          echo "Checking frontend at http://$LB_ADDRESS"
+          while [ $CURL_ATTEMPTS -lt $MAX_CURL_ATTEMPTS ] && [ "$FRONTEND_READY" != "true" ]; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$LB_ADDRESS || echo "failed")
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Frontend is accessible!"
+              FRONTEND_READY=true
+            else
+              CURL_ATTEMPTS=$((CURL_ATTEMPTS+1))
+              if [ $CURL_ATTEMPTS -lt $MAX_CURL_ATTEMPTS ]; then
+                echo "Frontend returned HTTP status $HTTP_STATUS, retrying in 30 seconds... (Attempt $CURL_ATTEMPTS/$MAX_CURL_ATTEMPTS)"
+                sleep 30
+              else
+                echo "Frontend not accessible after $MAX_CURL_ATTEMPTS attempts"
+              fi
+            fi
+          done
+      
+      - name: Deployment Summary
+        run: |
+          echo "=========== Deployment Summary ==========="
+          echo "Application deployed to EKS cluster: $CLUSTER_NAME"
+          echo "Region: $AWS_REGION"
+          echo "Image tag: $IMAGE_TAG"
+          
+          # Check all resources
+          echo ""
+          echo "Kubernetes resources:"
+          echo "- Deployments:"
+          kubectl get deployments -n talk2me
+          
+          echo "- Services:"
+          kubectl get services -n talk2me
+          
+          echo "- Pods:"
+          kubectl get pods -n talk2me
+          
+          # Show access information
+          echo ""
+          echo "Access Information:"
+          if [ -n "$LB_ADDRESS" ]; then
+            echo "Load Balancer Address: $LB_ADDRESS"
+            echo "Application URL: http://$LB_ADDRESS"
+            
+            # Check if the app is accessible
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://$LB_ADDRESS || echo "failed")
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Application is accessible and returning HTTP 200 OK"
+            else
+              echo "Application is not yet returning HTTP 200 (current status: $HTTP_STATUS)"
+              echo "You may need to wait a few minutes for everything to initialize."
+            fi
+          else
+            echo "Load Balancer Address: Not available"
+            echo "Please check AWS Console for more information."
+          fi
+          
+          echo ""
+          echo "Troubleshooting Tips:"
+          echo "1. If the application is not accessible, check pod logs:"
+          echo "   kubectl logs -n talk2me -l app=talk2me-frontend"
+          echo "   kubectl logs -n talk2me -l app=talk2me-backend"
+          echo "2. Check for events in the namespace:"
+          echo "   kubectl get events -n talk2me --sort-by='.lastTimestamp'"
+          echo "3. Check service details:"
+          echo "   kubectl describe service talk2me-lb -n talk2me"
+          echo ""
+          echo "Your Talk2Me application should be accessible via the load balancer URL!"
+          fi
+      
+      - name: Create Backend Deployment Template
+        run: |
+          mkdir -p k8s
+          
+          cat > k8s/backend-deployment.yaml << 'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-backend
+            namespace: talk2me
+            labels:
+              app: talk2me-backend
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-backend
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
+            template:
+              metadata:
+                labels:
+                  app: talk2me-backend
+              spec:
+                containers:
+                - name: backend
+                  image: ${BACKEND_IMAGE}
+                  imagePullPolicy: Always
+                  ports:
+                  - containerPort: 8000
+                    name: http
+                  env:
+                  - name: DEEPSEEK_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: talk2me-secrets
+                        key: deepseek-api-key
+                  resources:
+                    requests:
+                      memory: "256Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "512Mi"
+                      cpu: "500m"
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+                    successThreshold: 1
+                    failureThreshold: 3
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 30
+                    periodSeconds: 30
+                    timeoutSeconds: 5
+                    successThreshold: 1
+                    failureThreshold: 3
+          EOF
+      
+      - name: Apply Kubernetes Configurations
+        run: |
+          # Make sure namespace exists
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Apply backend configurations
+          echo "Applying backend deployment and service..."
+          kubectl apply -f k8s/backend-deployment.yaml
+          kubectl apply -f k8s/backend-service.yaml
+          
+          # Apply frontend configurations
+          echo "Applying frontend deployment and service..."
+          kubectl apply -f k8s/frontend-deployment.yaml
+          kubectl apply -f k8s/frontend-service.yaml
+          
+          # Apply load balancer configuration
+          echo "Applying load balancer service..."
+          kubectl apply -f k8s/loadbalancer.yaml
+      
+      - name: Wait for deployments to be ready
+        run: |
+          echo "Waiting for backend deployment to be ready..."
+          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=300s
+          
+          echo "Waiting for frontend deployment to be ready..."
+          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=300s
+      
+      - name: Wait for load balancer
+        id: get-lb
+        run: |
+          echo "Waiting for the load balancer to get an external IP or hostname (this may take a few minutes)..."
+          
+          # Wait for the load balancer to get an address
+          ATTEMPTS=0
+          MAX_ATTEMPTS=30
+          SLEEP_SECONDS=20
+          
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            LB_ADDRESS=$(kubectl get service talk2me-lb -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            
+            if [ -z "$LB_ADDRESS" ]; then
+              LB_ADDRESS=$(kubectl get service talk2me-lb -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            fi
+            
+            if [ -n "$LB_ADDRESS" ]; then
+              echo "Load balancer is available at: $LB_ADDRESS"
+              echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
+              echo "lb_address=$LB_ADDRESS" >> $GITHUB_OUTPUT
+              break
+            fi
+            
+            echo "Waiting for load balancer address... Attempt $(($ATTEMPTS+1))/$MAX_ATTEMPTS"
+            
+            # Check for potential issues every few attempts
+            if [ $(($ATTEMPTS % 5)) -eq 0 ]; then
+              echo "-----------------------------------"
+              echo "Checking service status:"
+              kubectl describe service talk2me-lb -n talk2me
+              
+              echo "-----------------------------------"
+              echo "Checking events:"
+              kubectl get events -n talk2me --sort-by='.lastTimestamp' | tail -20
+            fi
+            
+            ATTEMPTS=$((ATTEMPTS+1))
+            sleep $SLEEP_SECONDS
+          done
+          
+          if [ -z "$LB_ADDRESS" ]; then
+            echo "Warning: Load balancer address not available after several attempts"
+            echo "lb_address=not_found" >> $GITHUB_OUTPUT
+            
+            # Try to get events and describe the service for debugging
+            echo "Service details:"
+            kubectl describe service talk2me-lb -n talk2me
+            
+            echo "Recent events:"
+            kubectl get events -n talk2me --sort-by='.lastTimestamp' | tail -30
+          fi
+      
+      - name: Create Load Balancer Service
+        run: |
+          cat > k8s/loadbalancer.yaml << 'EOF'
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-lb
+            namespace: talk2me
+            annotations:
+              service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+              service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+              service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+          spec:
+            type: LoadBalancer
+            ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+            selector:
+              app: talk2me-frontend
+          EOF
+      
+      - name: Create Frontend Deployment Template
+        run: |
+          cat > k8s/frontend-deployment.yaml << 'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-frontend
+            namespace: talk2me
+            labels:
+              app: talk2me-frontend
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-frontend
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
+            template:
+              metadata:
+                labels:
+                  app: talk2me-frontend
+              spec:
+                containers:
+                - name: frontend
+                  image: ${FRONTEND_IMAGE}
+                  imagePullPolicy: Always
+                  ports:
+                  - containerPort: 80
+                    name: http
+                  resources:
+                    requests:
+                      memory: "128Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "256Mi"
+                      cpu: "300m"
+                  readinessProbe:
+                    httpGet:
+                      path: /
+                      port: 80
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+                  livenessProbe:
+                    httpGet:
+                      path: /
+                      port: 80
+                    initialDelaySeconds: 30
+                    periodSeconds: 30
+                    timeoutSeconds: 5
+          EOF
+          
+          # Replace variables in frontend deployment file
+          FRONTEND_IMAGE="${needs.build-and-push-images.outputs.frontend_image}"
+          sed -i "s|\${FRONTEND_IMAGE}|$FRONTEND_IMAGE|g" k8s/frontend-deployment.yaml
+          
+          cat > k8s/frontend-service.yaml << 'EOF'
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-frontend
+            namespace: talk2me
+            labels:
+              app: talk2me-frontend
+          spec:
+            selector:
+              app: talk2me-frontend
+            ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+            type: ClusterIP
+          EOF
+          
+          # Replace variables in backend deployment file
+          BACKEND_IMAGE="${needs.build-and-push-images.outputs.backend_image}"
+          sed -i "s|\${BACKEND_IMAGE}|$BACKEND_IMAGE|g" k8s/backend-deployment.yaml
+          
+          cat > k8s/backend-service.yaml << 'EOF'
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-backend
+            namespace: talk2me
+            labels:
+              app: talk2me-backend
+          spec:
+            selector:
+              app: talk2me-backend
+            ports:
+            - port: 80
+              targetPort: 8000
+              protocol: TCP
+              name: http
+            type: ClusterIP
+          EOF
+      
       - name: Get AWS Account ID
         id: get-aws-account
         run: |
@@ -83,7 +485,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v1
         
       - name: Cache Docker layers
-        uses: actions/cache@v2
+        uses: actions/cache@v3
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ github.sha }}
@@ -91,7 +493,7 @@ jobs:
             ${{ runner.os }}-buildx-
             
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
+        uses: docker/setup-buildx-action@v2
       
       - name: Check for existing images
         id: check-images
@@ -206,3 +608,25 @@ jobs:
           fi
           
           echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          
+      - name: Summary of Build Step
+        run: |
+          echo "==== Docker Images Built and Pushed ===="
+          echo "Backend Image: ${{ steps.build-backend.outputs.image }}"
+          echo "Frontend Image: ${{ steps.build-frontend.outputs.image }}"
+          echo "These images will be used in the deployment step"
+  
+  deploy-to-eks:
+    name: Deploy to EKS
+    needs: build-and-push-images
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
