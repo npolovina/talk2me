@@ -88,6 +88,9 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Debug ECR Registry
+        run: echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
+
       - name: Build and Push Backend
         id: push
         env:
@@ -105,6 +108,9 @@ jobs:
       image: ${{ steps.push.outputs.image }}
     steps:
       - uses: actions/checkout@v3
+
+      - name: Debug ECR Registry
+        run: echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
 
       - name: Build and Push Frontend
         id: push
