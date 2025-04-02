@@ -1,237 +1,237 @@
-# # .github/workflows/deploy.yml
-# name: 2. Deploy to K8s
+# .github/workflows/deploy.yml
+name: 2. Deploy to K8s
 
-# on:
-#   workflow_run:
-#     workflows: ["1. Build and Push Images"]
-#     types:
-#       - completed
-#     branches: [main]
-#   # Allow manual deployments
-#   workflow_dispatch:
-#     inputs:
-#       image_tag:
-#         description: 'Image tag to deploy (defaults to latest build)'
-#         required: false
-#         default: ''
-#       namespace:
-#         description: 'Kubernetes namespace to deploy to'
-#         required: false
-#         default: 'talk2me'
+on:
+  workflow_run:
+    workflows: ["1. Build and Push Images"]
+    types:
+      - completed
+    branches: [main]
+  # Allow manual deployments
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to latest build)'
+        required: false
+        default: ''
+      namespace:
+        description: 'Kubernetes namespace to deploy to'
+        required: false
+        default: 'talk2me'
 
-# jobs:
-#   deploy:
-#     runs-on: ubuntu-latest
-#     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-#     permissions:
-#       id-token: write  # Required for OIDC auth
-#       contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    permissions:
+      id-token: write  # Required for OIDC auth
+      contents: read
     
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-#       # Download artifacts from the triggering workflow (only for workflow_run trigger)
-#       - name: Download artifacts from workflow
-#         if: ${{ github.event_name == 'workflow_run' }}
-#         uses: dawidd6/action-download-artifact@v2
-#         with:
-#           workflow: build.yml
-#           name: deployment-info
-#           path: ./deployment-info
-#           workflow_conclusion: success
+      # Download artifacts from the triggering workflow (only for workflow_run trigger)
+      - name: Download artifacts from workflow
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: build.yml
+          name: deployment-info
+          path: ./deployment-info
+          workflow_conclusion: success
           
-#       # Configure AWS credentials
-#       - name: Configure AWS credentials
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-#           aws-region: ${{ secrets.AWS_REGION }}
-#           mask-aws-account-id: false # Show account ID for better debugging
+      # Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          mask-aws-account-id: false # Show account ID for better debugging
 
-#       # Verify AWS authentication
-#       - name: Verify AWS authentication
-#         run: |
-#           echo "Verifying AWS authentication:"
-#           aws sts get-caller-identity
-#           echo "AWS credentials successfully configured"
+      # Verify AWS authentication
+      - name: Verify AWS authentication
+        run: |
+          echo "Verifying AWS authentication:"
+          aws sts get-caller-identity
+          echo "AWS credentials successfully configured"
           
-#           # Also check ECR access
-#           echo "Verifying ECR access:"
-#           aws ecr get-authorization-token --region ${{ secrets.AWS_REGION }}
-#           echo "ECR access verified"
+          # Also check ECR access
+          echo "Verifying ECR access:"
+          aws ecr get-authorization-token --region ${{ secrets.AWS_REGION }}
+          echo "ECR access verified"
 
-#       # Install kubectl
-#       - name: Install kubectl
-#         uses: azure/setup-kubectl@v3
-#         with:
-#           version: 'latest'
+      # Install kubectl
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
 
-#       # Install eksctl
-#       - name: Install eksctl
-#         run: |
-#           curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-#           sudo mv /tmp/eksctl /usr/local/bin
-#           eksctl version
+      # Install eksctl
+      - name: Install eksctl
+        run: |
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
 
-#       # Get AWS account ID
-#       - name: Get AWS account ID
-#         id: aws-account
-#         run: |
-#           echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+      # Get AWS account ID
+      - name: Get AWS account ID
+        id: aws-account
+        run: |
+          echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
 
-#       # Set image tag based on input or artifact
-#       - name: Set image tag
-#         id: vars
-#         run: |
-#           # Set namespace
-#           if [ -n "${{ github.event.inputs.namespace }}" ]; then
-#             NAMESPACE="${{ github.event.inputs.namespace }}"
-#           else
-#             NAMESPACE="talk2me"
-#           fi
-#           echo "namespace=${NAMESPACE}" >> $GITHUB_OUTPUT
+      # Set image tag based on input or artifact
+      - name: Set image tag
+        id: vars
+        run: |
+          # Set namespace
+          if [ -n "${{ github.event.inputs.namespace }}" ]; then
+            NAMESPACE="${{ github.event.inputs.namespace }}"
+          else
+            NAMESPACE="talk2me"
+          fi
+          echo "namespace=${NAMESPACE}" >> $GITHUB_OUTPUT
           
-#           # Set image tag
-#           if [ -n "${{ github.event.inputs.image_tag }}" ]; then
-#             echo "image_tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
-#             echo "Using manually specified image tag: ${{ github.event.inputs.image_tag }}"
-#           elif [ -f "./deployment-info/image_tag.txt" ]; then
-#             IMAGE_TAG=$(cat ./deployment-info/image_tag.txt)
-#             echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-#             echo "Using image tag from build workflow: ${IMAGE_TAG}"
-#             if [ -f "./deployment-info/build_time.txt" ]; then
-#               BUILD_TIME=$(cat ./deployment-info/build_time.txt)
-#               echo "Image was built at: ${BUILD_TIME}"
-#             fi
-#           else
-#             # Fallback to 'latest' if no tag is available
-#             echo "image_tag=latest" >> $GITHUB_OUTPUT
-#             echo "Warning: No image tag found, using 'latest' instead"
-#           fi
+          # Set image tag
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "image_tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+            echo "Using manually specified image tag: ${{ github.event.inputs.image_tag }}"
+          elif [ -f "./deployment-info/image_tag.txt" ]; then
+            IMAGE_TAG=$(cat ./deployment-info/image_tag.txt)
+            echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+            echo "Using image tag from build workflow: ${IMAGE_TAG}"
+            if [ -f "./deployment-info/build_time.txt" ]; then
+              BUILD_TIME=$(cat ./deployment-info/build_time.txt)
+              echo "Image was built at: ${BUILD_TIME}"
+            fi
+          else
+            # Fallback to 'latest' if no tag is available
+            echo "image_tag=latest" >> $GITHUB_OUTPUT
+            echo "Warning: No image tag found, using 'latest' instead"
+          fi
 
-#       # Update kubeconfig to connect to EKS cluster
-#       - name: Update kubeconfig for EKS cluster
-#         run: |
-#           if [ -z "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
-#             echo "Error: EKS_CLUSTER_NAME secret is not set"
-#             exit 1
-#           fi
+      # Update kubeconfig to connect to EKS cluster
+      - name: Update kubeconfig for EKS cluster
+        run: |
+          if [ -z "${{ secrets.EKS_CLUSTER_NAME }}" ]; then
+            echo "Error: EKS_CLUSTER_NAME secret is not set"
+            exit 1
+          fi
           
-#           # Get current role identity for debugging
-#           echo "Current AWS identity:"
-#           aws sts get-caller-identity
+          # Get current role identity for debugging
+          echo "Current AWS identity:"
+          aws sts get-caller-identity
           
-#           # Describe EKS cluster to verify access
-#           echo "Verifying access to EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}:"
-#           aws eks describe-cluster --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }} --query "cluster.name"
+          # Describe EKS cluster to verify access
+          echo "Verifying access to EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}:"
+          aws eks describe-cluster --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }} --query "cluster.name"
           
-#           # Update kubeconfig
-#           echo "Updating kubeconfig for EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}..."
-#           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
-#             --name ${{ secrets.EKS_CLUSTER_NAME }}
+          # Update kubeconfig
+          echo "Updating kubeconfig for EKS cluster ${{ secrets.EKS_CLUSTER_NAME }}..."
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
           
-#           # Test access to the cluster
-#           echo "Testing access to Kubernetes cluster:"
-#           kubectl cluster-info
-#           kubectl get nodes
+          # Test access to the cluster
+          echo "Testing access to Kubernetes cluster:"
+          kubectl cluster-info
+          kubectl get nodes
 
-#       # Create namespace if it doesn't exist
-#       - name: Ensure namespace exists
-#         run: |
-#           echo "Creating namespace ${{ steps.vars.outputs.namespace }} if it doesn't exist..."
-#           kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
+      # Create namespace if it doesn't exist
+      - name: Ensure namespace exists
+        run: |
+          echo "Creating namespace ${{ steps.vars.outputs.namespace }} if it doesn't exist..."
+          kubectl create namespace ${{ steps.vars.outputs.namespace }} --dry-run=client -o yaml | kubectl apply -f -
 
-#       # Update Kubernetes secrets
-#       - name: Update Kubernetes secrets
-#         run: |
-#           echo "Creating Kubernetes secret..."
-#           DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
+      # Update Kubernetes secrets
+      - name: Update Kubernetes secrets
+        run: |
+          echo "Creating Kubernetes secret..."
+          DEEPSEEK_API_KEY_BASE64=$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)
           
-#           # Create secret configuration
-#           cat << EOF > ./secret.yaml
-#           apiVersion: v1
-#           kind: Secret
-#           metadata:
-#             name: talk2me-secrets
-#             namespace: ${{ steps.vars.outputs.namespace }}
-#           type: Opaque
-#           data:
-#             deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
-#           EOF
+          # Create secret configuration
+          cat << EOF > ./secret.yaml
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: talk2me-secrets
+            namespace: ${{ steps.vars.outputs.namespace }}
+          type: Opaque
+          data:
+            deepseek-api-key: ${DEEPSEEK_API_KEY_BASE64}
+          EOF
           
-#           # Apply the secret
-#           kubectl apply -f ./secret.yaml
-#           rm ./secret.yaml
+          # Apply the secret
+          kubectl apply -f ./secret.yaml
+          rm ./secret.yaml
 
-#       # Process and apply Kubernetes manifests
-#       - name: Deploy to EKS
-#         run: |
-#           echo "Deploying Kubernetes manifests..."
-#           # Set variables for templating
-#           export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
-#           export AWS_REGION="${{ secrets.AWS_REGION }}"
-#           export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
-#           export NAMESPACE="${{ steps.vars.outputs.namespace }}"
-#           export DEEPSEEK_API_KEY_BASE64="$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)"
+      # Process and apply Kubernetes manifests
+      - name: Deploy to EKS
+        run: |
+          echo "Deploying Kubernetes manifests..."
+          # Set variables for templating
+          export AWS_ACCOUNT_ID="${{ steps.aws-account.outputs.account_id }}"
+          export AWS_REGION="${{ secrets.AWS_REGION }}"
+          export IMAGE_TAG="${{ steps.vars.outputs.image_tag }}"
+          export NAMESPACE="${{ steps.vars.outputs.namespace }}"
+          export DEEPSEEK_API_KEY_BASE64="$(echo -n "${{ secrets.DEEPSEEK_API_KEY }}" | base64 -w 0)"
           
-#           # Process each manifest
-#           for manifest in k8s/*.yaml; do
-#             if [ -f "$manifest" ]; then
-#               echo "Processing $manifest..."
-#               # Replace environment variables in manifest
-#               envsubst < "$manifest" > processed_manifest.yaml
-#               # Apply the manifest
-#               kubectl apply -f processed_manifest.yaml
-#               # Save result code to check for errors
-#               RESULT=$?
-#               if [ $RESULT -ne 0 ]; then
-#                 echo "Warning: Failed to apply $manifest with exit code $RESULT"
-#                 echo "Contents of processed manifest:"
-#                 cat processed_manifest.yaml
-#               fi
-#               rm processed_manifest.yaml
-#             fi
-#           done
+          # Process each manifest
+          for manifest in k8s/*.yaml; do
+            if [ -f "$manifest" ]; then
+              echo "Processing $manifest..."
+              # Replace environment variables in manifest
+              envsubst < "$manifest" > processed_manifest.yaml
+              # Apply the manifest
+              kubectl apply -f processed_manifest.yaml
+              # Save result code to check for errors
+              RESULT=$?
+              if [ $RESULT -ne 0 ]; then
+                echo "Warning: Failed to apply $manifest with exit code $RESULT"
+                echo "Contents of processed manifest:"
+                cat processed_manifest.yaml
+              fi
+              rm processed_manifest.yaml
+            fi
+          done
           
-#           # List all applied resources
-#           echo "Deployed resources in namespace ${{ steps.vars.outputs.namespace }}:"
-#           kubectl get all -n ${{ steps.vars.outputs.namespace }}
+          # List all applied resources
+          echo "Deployed resources in namespace ${{ steps.vars.outputs.namespace }}:"
+          kubectl get all -n ${{ steps.vars.outputs.namespace }}
 
-#       # Verify deployment with timeouts and error handling
-#       - name: Verify deployment
-#         run: |
-#           echo "Verifying backend deployment..."
-#           kubectl rollout status deployment/talk2me-backend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
-#             echo "Warning: Backend deployment verification timed out"
-#             echo "Current pods status:"
-#             kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-backend -o wide
-#             echo "Recent pod events:"
-#             kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep backend || true
-#           }
+      # Verify deployment with timeouts and error handling
+      - name: Verify deployment
+        run: |
+          echo "Verifying backend deployment..."
+          kubectl rollout status deployment/talk2me-backend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Backend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-backend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep backend || true
+          }
           
-#           echo "Verifying frontend deployment..."
-#           kubectl rollout status deployment/talk2me-frontend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
-#             echo "Warning: Frontend deployment verification timed out"
-#             echo "Current pods status:"
-#             kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-frontend -o wide
-#             echo "Recent pod events:"
-#             kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep frontend || true
-#           }
+          echo "Verifying frontend deployment..."
+          kubectl rollout status deployment/talk2me-frontend -n ${{ steps.vars.outputs.namespace }} --timeout=180s || {
+            echo "Warning: Frontend deployment verification timed out"
+            echo "Current pods status:"
+            kubectl get pods -n ${{ steps.vars.outputs.namespace }} -l app=talk2me-frontend -o wide
+            echo "Recent pod events:"
+            kubectl get events -n ${{ steps.vars.outputs.namespace }} --sort-by='.lastTimestamp' | grep frontend || true
+          }
 
-#       # Get service details
-#       - name: Get service information
-#         run: |
-#           echo "Service information for namespace ${{ steps.vars.outputs.namespace }}:"
-#           kubectl get services -n ${{ steps.vars.outputs.namespace }}
+      # Get service details
+      - name: Get service information
+        run: |
+          echo "Service information for namespace ${{ steps.vars.outputs.namespace }}:"
+          kubectl get services -n ${{ steps.vars.outputs.namespace }}
           
-#           # Check if ingress is available
-#           if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &>/dev/null; then
-#             echo "Ingress information:"
-#             kubectl get ingress -n ${{ steps.vars.outputs.namespace }}
-#             echo "Application should be accessible via the above ingress address"
-#           else
-#             echo "No ingress found. The application may be accessible via ClusterIP or LoadBalancer services."
-#           fi
+          # Check if ingress is available
+          if kubectl get ingress -n ${{ steps.vars.outputs.namespace }} &>/dev/null; then
+            echo "Ingress information:"
+            kubectl get ingress -n ${{ steps.vars.outputs.namespace }}
+            echo "Application should be accessible via the above ingress address"
+          else
+            echo "No ingress found. The application may be accessible via ClusterIP or LoadBalancer services."
+          fi
           
-#           echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "Deployment completed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
