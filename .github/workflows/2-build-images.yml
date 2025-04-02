@@ -88,8 +88,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Debug ECR Registry
-        run: echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
+      - name: Print and Validate ECR_REGISTRY
+        run: |
+          echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
+          if [ -z "${{ needs.login-ecr.outputs.registry }}" ]; then
+            echo "::error::ECR_REGISTRY is empty. Cannot proceed."
+            exit 1
+          fi
 
       - name: Build and Push Backend
         id: push
@@ -109,8 +114,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Debug ECR Registry
-        run: echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
+      - name: Print and Validate ECR_REGISTRY
+        run: |
+          echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
+          if [ -z "${{ needs.login-ecr.outputs.registry }}" ]; then
+            echo "::error::ECR_REGISTRY is empty. Cannot proceed."
+            exit 1
+          fi
 
       - name: Build and Push Frontend
         id: push
