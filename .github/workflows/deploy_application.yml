@@ -415,4 +415,45 @@ jobs:
             echo "DNS change ID: $CHANGE_ID"
             echo "DNS changes take time to propagate. Please allow 5-10 minutes."
           else
-            echo "Failed to get or create hosted zone. DNS records not updated
+            echo "Failed to get or create hosted zone. DNS records not updated."
+          fi
+      
+      - name: Summary
+        run: |
+          echo "=========== Deployment Summary ==========="
+          echo "Application deployed to EKS cluster: $CLUSTER_NAME"
+          echo "Region: $AWS_REGION"
+          echo "Image tag: $IMAGE_TAG"
+          
+          # Check all resources
+          echo ""
+          echo "Kubernetes resources:"
+          echo "- Deployments:"
+          kubectl get deployments -n talk2me
+          
+          echo "- Services:"
+          kubectl get services -n talk2me
+          
+          echo "- Ingress:"
+          kubectl get ingress -n talk2me
+          
+          echo "- Pods:"
+          kubectl get pods -n talk2me
+          
+          # Show access information
+          echo ""
+          echo "Access Information:"
+          if [ -n "$LB_ADDRESS" ]; then
+            echo "Load Balancer Address: $LB_ADDRESS"
+            echo "Frontend URL: https://$DOMAIN_NAME"
+            echo "Backend API URL: https://$API_DOMAIN_NAME"
+            echo "Direct ALB access: http://$LB_ADDRESS"
+            echo ""
+            echo "DNS records have been updated, but changes may take time to propagate."
+            echo "If the application is not accessible immediately, please wait 5-10 minutes."
+          else
+            echo "Load Balancer Address: Not available"
+            echo "Could not determine the load balancer address. Check the AWS Load Balancer Controller logs."
+          fi
+          
+          echo "=========================================="
