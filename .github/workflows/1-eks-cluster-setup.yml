@@ -1,45 +1,45 @@
 name: 1. EKS Cluster Setup
 
 on:
-workflow_dispatch:
-  inputs:
-    region:
-      description: 'AWS Region'
-      required: true
-      default: 'us-east-1'
-    cluster_name:
-      description: 'EKS Cluster Name'
-      required: true
-      default: 'talk2me-cluster'
-    node_group_size:
-      description: 'Node Group Size (min,desired,max)'
-      required: true
-      default: '2,3,4'
-    node_instance_type:
-      description: 'EC2 Instance Type for Nodes'
-      required: true
-      default: 't3.large'
-    kubernetes_version:
-      description: 'Kubernetes Version'
-      required: true
-      default: '1.28'
-    enable_autoscaler:
-      description: 'Enable Cluster Autoscaler'
-      required: false
-      default: 'false'
-      type: boolean
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      node_group_size:
+        description: 'Node Group Size (min,desired,max)'
+        required: true
+        default: '2,3,4'
+      node_instance_type:
+        description: 'EC2 Instance Type for Nodes'
+        required: true
+        default: 't3.large'
+      kubernetes_version:
+        description: 'Kubernetes Version'
+        required: true
+        default: '1.28'
+      enable_autoscaler:
+        description: 'Enable Cluster Autoscaler'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
-AWS_REGION: ${{ github.event.inputs.region }}
-CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
 
 permissions:
-id-token: write
-contents: read
+  id-token: write
+  contents: read
 
 jobs:
 # JOB 1: Check prerequisites and set up common resources
-prerequisites:
+ prerequisites:
   name: Check Prerequisites & Setup
   runs-on: ubuntu-latest
   outputs:
@@ -83,7 +83,7 @@ prerequisites:
         fi
 
 # JOB 2: Create EKS cluster if it doesn't exist
-create-cluster:
+ create-cluster:
   name: Create EKS Cluster
   needs: prerequisites
   if: needs.prerequisites.outputs.cluster_exists == 'false'
@@ -128,7 +128,7 @@ create-cluster:
         fi
 
 # JOB 3: Setup kubeconfig
-setup-kubeconfig:
+ setup-kubeconfig:
   name: Setup Kubeconfig
   needs: [prerequisites, create-cluster]
   if: always() && (needs.prerequisites.outputs.cluster_exists == 'true' || needs.create-cluster.result == 'success')
@@ -191,7 +191,7 @@ setup-kubeconfig:
         fi
 
 # JOB 4: Update EKS add-ons
-update-addons:
+ update-addons:
   name: Update EKS Add-ons
   needs: setup-kubeconfig
   runs-on: ubuntu-latest
@@ -306,7 +306,7 @@ update-addons:
         echo "All add-ons have been configured"
 
 # JOB 5: Tag subnets for Load Balancer Controller
-tag-subnets:
+ tag-subnets:
   name: Tag Subnets for Load Balancer
   needs: setup-kubeconfig
   runs-on: ubuntu-latest
@@ -366,7 +366,7 @@ tag-subnets:
         done
 
 # JOB 6: Install AWS Load Balancer Controller
-install-load-balancer:
+ install-load-balancer:
   name: Install AWS Load Balancer Controller
   needs: [prerequisites, tag-subnets]
   runs-on: ubuntu-latest
@@ -477,7 +477,7 @@ install-load-balancer:
         fi
 
 # JOB 7: Setup External DNS
-setup-external-dns:
+ setup-external-dns:
   name: Setup External DNS
   needs: [prerequisites, setup-kubeconfig]
   runs-on: ubuntu-latest
@@ -577,9 +577,8 @@ setup-external-dns:
           echo "⚠️ Continuing workflow despite failure. Manual intervention may be required."
         fi
 
-
 # JOB 8: Create Namespace and Secret
-create-namespace-and-secret:
+ create-namespace-and-secret:
   name: Create Namespace and Secret
   needs: setup-kubeconfig
   runs-on: ubuntu-latest
@@ -609,7 +608,7 @@ create-namespace-and-secret:
           --dry-run=client -o yaml | kubectl apply -f -
 
 # JOB 9: Configure Cluster Autoscaler (when requested)
-configure-autoscaler:
+ configure-autoscaler:
   name: Configure Cluster Autoscaler
   needs: [prerequisites, setup-kubeconfig]
   if: github.event.inputs.enable_autoscaler == 'true'
@@ -705,18 +704,18 @@ configure-autoscaler:
           echo "Continuing workflow despite timeout - manual verification required later"
         }
  # JOB 10: Verify Cluster Status
- verify-cluster:
-  name: Verify Cluster Status
-  needs: [
+   verify-cluster:
+   name: Verify Cluster Status
+   needs: [
     setup-kubeconfig, 
     update-addons, 
     install-load-balancer, 
     setup-external-dns, 
     create-namespace-and-secret
-  ]
-  # Also wait for autoscaler if it was requested
-  if: always() && (needs.setup-kubeconfig.result == 'success')
-  runs-on: ubuntu-latest
+   ]
+   # Also wait for autoscaler if it was requested
+   if: always() && (needs.setup-kubeconfig.result == 'success')
+   runs-on: ubuntu-latest
   
   steps:
     - name: Configure AWS credentials
