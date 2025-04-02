@@ -1,68 +1,68 @@
-name: Frontend CI/CD
+# name: Frontend CI/CD
 
-on:
-  push:
-    branches: [ main ]
-#     paths:
-#       - 'frontend/**'
-#       - '.github/workflows/frontend-deploy.yml'
-#   pull_request:
+# on:
+#   push:
 #     branches: [ main ]
-#     paths:
-#       - 'frontend/**'
-#       - '.github/workflows/frontend-deploy.yml'
+# #     paths:
+# #       - 'frontend/**'
+# #       - '.github/workflows/frontend-deploy.yml'
+# #   pull_request:
+# #     branches: [ main ]
+# #     paths:
+# #       - 'frontend/**'
+# #       - '.github/workflows/frontend-deploy.yml'
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: talk2me-frontend
-  EKS_CLUSTER_NAME: talk2me
+# env:
+#   AWS_REGION: us-east-1
+#   ECR_REPOSITORY: talk2me-frontend
+#   EKS_CLUSTER_NAME: talk2me
 
-jobs:
-  build-and-deploy:
-    name: Build and Deploy Frontend
-    runs-on: ubuntu-latest
+# jobs:
+#   build-and-deploy:
+#     name: Build and Deploy Frontend
+#     runs-on: ubuntu-latest
     
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+#     steps:
+#     - name: Checkout code
+#       uses: actions/checkout@v3
     
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+#     - name: Configure AWS credentials
+#       uses: aws-actions/configure-aws-credentials@v1
+#       with:
+#         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#         aws-region: ${{ env.AWS_REGION }}
     
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+#     - name: Login to Amazon ECR
+#       id: login-ecr
+#       uses: aws-actions/amazon-ecr-login@v1
     
-    - name: Build, tag, and push image to Amazon ECR
-      id: build-image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      working-directory: frontend
-      run: |
-        # Build a docker container and push it to ECR
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+#     - name: Build, tag, and push image to Amazon ECR
+#       id: build-image
+#       env:
+#         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#         IMAGE_TAG: ${{ github.sha }}
+#       working-directory: frontend
+#       run: |
+#         # Build a docker container and push it to ECR
+#         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+#         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+#         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
     
-    - name: Update kube config
-      run: |
-        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+#     - name: Update kube config
+#       run: |
+#         aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
     
-    - name: Deploy to EKS
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        # Replace image tag in k8s deployment
-        sed -i "s|\${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/talk2me-frontend:\${IMAGE_TAG}|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" frontend-deployment.yaml
+#     - name: Deploy to EKS
+#       env:
+#         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#         IMAGE_TAG: ${{ github.sha }}
+#       run: |
+#         # Replace image tag in k8s deployment
+#         sed -i "s|\${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/talk2me-frontend:\${IMAGE_TAG}|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" frontend-deployment.yaml
         
-        # Apply the deployment
-        kubectl apply -f frontend-deployment.yaml -n talk2me
+#         # Apply the deployment
+#         kubectl apply -f frontend-deployment.yaml -n talk2me
         
-        # Verify deployment
-        kubectl rollout status deployment/talk2me-frontend -n talk2me
+#         # Verify deployment
+#         kubectl rollout status deployment/talk2me-frontend -n talk2me
