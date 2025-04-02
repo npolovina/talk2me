@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       region:
-      description: 'AWS Region'
-      required: true
-      default: 'us-east-1'
-    image_tag:
-      description: 'Docker Image Tag'
-      required: true
-      default: 'latest'
-    cluster_name:
-      description: 'EKS Cluster Name'
-      required: true
-      default: 'talk2me-cluster'
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      image_tag:
+        description: 'Docker Image Tag'
+        required: true
+        default: 'latest'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
 env:
   AWS_REGION: ${{ github.event.inputs.region }}
   CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
