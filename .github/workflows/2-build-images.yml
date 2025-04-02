@@ -102,19 +102,29 @@ jobs:
           echo "Found backend Dockerfile at: $BACKEND_DOCKERFILE"
           echo "Building from directory: $BACKEND_DIR"
           
-          # Generate a unique build timestamp to force new image creation
+          # Generate a unique build timestamp
           BUILD_TIMESTAMP=$(date +%s)
           
-          # Use the original Dockerfile but pass a build arg to force rebuild
-          cat "$BACKEND_DOCKERFILE" > "${BACKEND_DIR}/Dockerfile.clean"
+          # Create temporary Dockerfile with ARG to invalidate cache
+          cat > "${BACKEND_DIR}/Dockerfile.timestamp" << EOF
+          # Add build timestamp to invalidate cache
+          ARG BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+          
+          $(cat "$BACKEND_DOCKERFILE")
+          EOF
           
           # Build with both the user-specified tag and the SHA tag, forcing a clean build
-          docker build --no-cache --pull \
+          docker build --no-cache --pull --force-rm \
             --build-arg BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
-            -f "${BACKEND_DIR}/Dockerfile.clean" \
+            -f "${BACKEND_DIR}/Dockerfile.timestamp" \
             -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG \
             "$BACKEND_DIR"
+          
+          # Clean any existing images with these tags in ECR (ignore errors if they don't exist)
+          aws ecr batch-delete-image \
+            --repository-name $BACKEND_ECR_REPOSITORY \
+            --image-ids imageTag=$IMAGE_TAG imageTag=$COMBINED_TAG 2>/dev/null || true
           
           # Push both tags
           docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
@@ -141,20 +151,30 @@ jobs:
           echo "Found frontend Dockerfile at: $FRONTEND_DOCKERFILE"
           echo "Building from directory: $FRONTEND_DIR"
           
-          # Generate a unique build timestamp to force new image creation
+          # Generate a unique build timestamp
           BUILD_TIMESTAMP=$(date +%s)
           
-          # Use the original Dockerfile
-          cat "$FRONTEND_DOCKERFILE" > "${FRONTEND_DIR}/Dockerfile.clean"
+          # Create temporary Dockerfile with ARG to invalidate cache
+          cat > "${FRONTEND_DIR}/Dockerfile.timestamp" << EOF
+          # Add build timestamp to invalidate cache
+          ARG BUILD_TIMESTAMP=$BUILD_TIMESTAMP
+          
+          $(cat "$FRONTEND_DOCKERFILE")
+          EOF
           
           # Build with both the user-specified tag and the SHA tag, forcing a clean build
-          docker build --no-cache --pull \
+          docker build --no-cache --pull --force-rm \
             --build-arg BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
             --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
-            -f "${FRONTEND_DIR}/Dockerfile.clean" \
+            -f "${FRONTEND_DIR}/Dockerfile.timestamp" \
             -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG \
             "$FRONTEND_DIR"
+          
+          # Clean any existing images with these tags in ECR (ignore errors if they don't exist)
+          aws ecr batch-delete-image \
+            --repository-name $FRONTEND_ECR_REPOSITORY \
+            --image-ids imageTag=$IMAGE_TAG imageTag=$COMBINED_TAG 2>/dev/null || true
           
           # Push both tags
           docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
