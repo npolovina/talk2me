@@ -1,4 +1,4 @@
-name: 2. Deploy Application to EKS
+name: 3. Deploy Application to EKS
 
 on:
   workflow_dispatch:
