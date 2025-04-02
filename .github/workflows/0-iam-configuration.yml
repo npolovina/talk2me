@@ -130,9 +130,9 @@ jobs:
       - name: Prepare policy document
         run: |
           if [ -n "${{ matrix.policy.url }}" ]; then
-            curl -o ${{ matrix.policy.file }} ${{ matrix.policy.url }}
+            curl -o "${{ matrix.policy.file }}" "${{ matrix.policy.url }}"
           else
-            echo '${{ matrix.policy.content }}' > ${{ matrix.policy.file }}
+            echo '${{ matrix.policy.content }}' > "${{ matrix.policy.file }}"
 
       - name: Create or Update IAM Policy
         run: |
