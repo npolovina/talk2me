@@ -65,7 +65,7 @@ jobs:
             --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
 
   login-ecr:
-   needs: setup
+   needs: create-ecr
    runs-on: ubuntu-latest
    steps:
    - uses: aws-actions/configure-aws-credentials@v2
