@@ -59,7 +59,7 @@ jobs:
         IMAGE_TAG: ${{ github.sha }}
       run: |
         # Replace image tag in k8s deployment
-        sed -i "s|\${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/talk2me-backend:\${IMAGE_TAG}|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" k8s/backend-deployment.yaml
+        sed -i "s|\${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/talk2me-backend:\${IMAGE_TAG}|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" backend-deployment.yaml
         
         # Set DeepSeek API key as a Kubernetes secret
         kubectl create secret generic talk2me-secrets \
@@ -67,7 +67,7 @@ jobs:
           --dry-run=client -o yaml | kubectl apply -f -
         
         # Apply the deployment
-        kubectl apply -f k8s/backend-deployment.yaml -n talk2me
+        kubectl apply -f backend-deployment.yaml -n talk2me
         
         # Verify deployment
         kubectl rollout status deployment/talk2me-backend -n talk2me

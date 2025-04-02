@@ -59,10 +59,10 @@ jobs:
         IMAGE_TAG: ${{ github.sha }}
       run: |
         # Replace image tag in k8s deployment
-        sed -i "s|\${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/talk2me-frontend:\${IMAGE_TAG}|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" k8s/frontend-deployment.yaml
+        sed -i "s|\${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com/talk2me-frontend:\${IMAGE_TAG}|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" frontend-deployment.yaml
         
         # Apply the deployment
-        kubectl apply -f k8s/frontend-deployment.yaml -n talk2me
+        kubectl apply -f frontend-deployment.yaml -n talk2me
         
         # Verify deployment
         kubectl rollout status deployment/talk2me-frontend -n talk2me
