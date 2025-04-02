@@ -1,0 +1,282 @@
+name: 2. Deploy Application to EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      image_tag:
+        description: 'Docker Image Tag (must exist in ECR)'
+        required: true
+        default: 'latest'
+      build_run_id:
+        description: 'Build workflow run ID (optional, to get images from previous build)'
+        required: false
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+  BACKEND_ECR_REPOSITORY: talk2me-backend
+  FRONTEND_ECR_REPOSITORY: talk2me-frontend
+  ALB_NAME: talk2me-alb
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  deploy-to-eks:
+    name: Deploy to EKS Cluster
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get AWS Account ID
+        id: get-aws-account
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+          
+      - name: Download image info from build workflow (if provided)
+        id: get-image-info
+        if: github.event.inputs.build_run_id != ''
+        run: |
+          echo "Downloading image information from build workflow run ID: ${{ github.event.inputs.build_run_id }}"
+          mkdir -p ./artifacts
+          
+          # Use GitHub API to download the artifact
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/${{ github.repository }}/actions/runs/${{ github.event.inputs.build_run_id }}/artifacts > artifacts_list.json
+          
+          # Extract the artifact ID for image-info
+          IMAGE_INFO_ARTIFACT_ID=$(jq '.artifacts[] | select(.name=="image-info") | .id' artifacts_list.json)
+          
+          if [ -z "$IMAGE_INFO_ARTIFACT_ID" ]; then
+            echo "Could not find image-info artifact in the specified workflow run"
+            exit 1
+          fi
+          
+          # Download the artifact
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/${{ github.repository }}/actions/artifacts/$IMAGE_INFO_ARTIFACT_ID/zip -o artifact.zip
+          
+          # Extract the artifact
+          unzip artifact.zip -d ./artifacts
+          
+          # Read the image info
+          if [ -f "./artifacts/image-info.env" ]; then
+            cat ./artifacts/image-info.env >> $GITHUB_ENV
+            echo "Successfully loaded image information from previous build"
+          else
+            echo "Failed to extract image-info.env from the artifact"
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup ECR image references
+        run: |
+          if [ -z "$BACKEND_IMAGE" ] || [ -z "$FRONTEND_IMAGE" ]; then
+            echo "No image information from previous build, using specified tag"
+            ECR_REGISTRY=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+            BACKEND_IMAGE=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
+            FRONTEND_IMAGE=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
+            echo "BACKEND_IMAGE=$BACKEND_IMAGE" >> $GITHUB_ENV
+            echo "FRONTEND_IMAGE=$FRONTEND_IMAGE" >> $GITHUB_ENV
+          fi
+          
+          echo "Using Backend Image: $BACKEND_IMAGE"
+          echo "Using Frontend Image: $FRONTEND_IMAGE"
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+      
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+      
+      - name: Deploy or update Kubernetes manifests
+        run: |
+          # Create namespace if it doesn't exist
+          kubectl get namespace talk2me || kubectl create namespace talk2me
+          
+          # Create backend deployment
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-backend
+            namespace: talk2me
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-backend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-backend
+              spec:
+                containers:
+                - name: backend
+                  image: ${BACKEND_IMAGE}
+                  ports:
+                  - containerPort: 8080
+                  resources:
+                    limits:
+                      cpu: "1"
+                      memory: "1Gi"
+                    requests:
+                      cpu: "0.5"
+                      memory: "512Mi"
+          EOF
+          
+          # Create backend service
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-backend
+            namespace: talk2me
+          spec:
+            selector:
+              app: talk2me-backend
+            ports:
+            - port: 80
+              targetPort: 8080
+            type: ClusterIP
+          EOF
+          
+          # Create frontend deployment
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-frontend
+            namespace: talk2me
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-frontend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-frontend
+              spec:
+                containers:
+                - name: frontend
+                  image: ${FRONTEND_IMAGE}
+                  ports:
+                  - containerPort: 80
+                  resources:
+                    limits:
+                      cpu: "0.5"
+                      memory: "512Mi"
+                    requests:
+                      cpu: "0.25"
+                      memory: "256Mi"
+          EOF
+          
+          # Create frontend service
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-frontend
+            namespace: talk2me
+          spec:
+            selector:
+              app: talk2me-frontend
+            ports:
+            - port: 80
+              targetPort: 80
+            type: ClusterIP
+          EOF
+          
+          # Create Ingress for external access
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: talk2me
+            annotations:
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/load-balancer-name: ${ALB_NAME}
+          spec:
+            rules:
+            - http:
+                paths:
+                - path: /api
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-backend
+                      port:
+                        number: 80
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-frontend
+                      port:
+                        number: 80
+          EOF
+      
+      - name: Verify deployment
+        run: |
+          echo "Waiting for deployments to be ready..."
+          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=300s
+          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=300s
+          
+          echo "Getting pod status..."
+          kubectl get pods -n talk2me
+          
+          echo "Getting services..."
+          kubectl get svc -n talk2me
+          
+          echo "Getting ingress..."
+          kubectl get ingress -n talk2me
+          
+          # Try to get ALB DNS name
+          echo "Getting ALB URL..."
+          ALB_DNS=$(kubectl get ingress talk2me-ingress -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          if [ -n "$ALB_DNS" ]; then
+            echo "Application is available at: http://$ALB_DNS"
+            echo "ALB_DNS=$ALB_DNS" >> $GITHUB_ENV
+          else
+            echo "ALB DNS name not yet available. Check AWS console for ALB status."
+          fi
+      
+      - name: Output Application URL
+        run: |
+          if [ -n "$ALB_DNS" ]; then
+            echo "::notice::Application deployed successfully and available at: http://$ALB_DNS"
+          else
+            echo "::notice::Application deployed successfully. Check AWS console for ALB URL."
+          fi
