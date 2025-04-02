@@ -317,8 +317,8 @@ jobs:
       
       - name: Create Frontend Deployment Template
         run: |
-          # Set variables for image references
-          FRONTEND_IMAGE="${{ needs.build-and-push-images.outputs.aws_account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.FRONTEND_ECR_REPOSITORY }}:${{ needs.build-and-push-images.outputs.sha_tag }}"
+          # Set variables for image references - using the same tag as backend for consistency
+          FRONTEND_IMAGE="${{ needs.build-and-push-images.outputs.aws_account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.FRONTEND_ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
           
           # Create frontend deployment manifest
           cat > k8s/frontend-deployment.yaml << EOF
