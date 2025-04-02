@@ -23,127 +23,199 @@ permissions:
   contents: read
 
 jobs:
-  setup-aws:
+  build-and-push-images:
+    name: Build and Push Docker Images
     runs-on: ubuntu-latest
+    
     outputs:
+      backend_image: ${{ steps.build-backend.outputs.image }}
+      frontend_image: ${{ steps.build-frontend.outputs.image }}
       aws_account_id: ${{ steps.get-aws-account.outputs.account_id }}
+    
     steps:
-      - uses: actions/checkout@v3
-
-      - uses: aws-actions/configure-aws-credentials@v2
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - id: get-aws-account
+      
+      - name: Get AWS Account ID
+        id: get-aws-account
         run: |
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
           echo "account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
-
-  create-ecr:
-    needs: setup-aws
-    runs-on: ubuntu-latest
-    steps:
-      - uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - run: |
+      
+      - name: Create ECR Repositories
+        run: |
+          # Create Backend ECR Repository if it doesn't exist
           aws ecr describe-repositories --repository-names $BACKEND_ECR_REPOSITORY 2>/dev/null || \
           aws ecr create-repository --repository-name $BACKEND_ECR_REPOSITORY --image-scanning-configuration scanOnPush=true
-
+          
+          # Create Frontend ECR Repository if it doesn't exist
           aws ecr describe-repositories --repository-names $FRONTEND_ECR_REPOSITORY 2>/dev/null || \
           aws ecr create-repository --repository-name $FRONTEND_ECR_REPOSITORY --image-scanning-configuration scanOnPush=true
-
-          aws ecr put-lifecycle-policy --repository-name $BACKEND_ECR_REPOSITORY \
-            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
-
-          aws ecr put-lifecycle-policy --repository-name $FRONTEND_ECR_REPOSITORY \
-            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
-
-  login-ecr:
-    needs: create-ecr
-    runs-on: ubuntu-latest
-    outputs:
-      registry: ${{ steps.login.outputs.registry }}
-    steps:
-      - uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
+          
+          # Set ECR lifecycle policies to keep only last 10 images
+          echo "Setting lifecycle policy for backend repository..."
+          aws ecr put-lifecycle-policy \
+            --repository-name $BACKEND_ECR_REPOSITORY \
+            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}' || echo "Failed to set lifecycle policy for backend repository"
+            
+          echo "Setting lifecycle policy for frontend repository..."
+          aws ecr put-lifecycle-policy \
+            --repository-name $FRONTEND_ECR_REPOSITORY \
+            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}' || echo "Failed to set lifecycle policy for frontend repository"
+          
+          echo "ECR repositories created or verified with lifecycle policies"
+      
       - name: Login to Amazon ECR
-        id: login
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
-
-  build-backend:
-    needs: login-ecr
-    runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.push.outputs.image }}
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Print and Validate ECR_REGISTRY
+        
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+            
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      
+      - name: Check for existing images
+        id: check-images
         run: |
-          echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
-          if [ -z "${{ needs.login-ecr.outputs.registry }}" ]; then
-            echo "::error::ECR_REGISTRY is empty. Cannot proceed."
-            exit 1
-          fi
-
-      - name: Build and Push Backend
-        id: push
+          # Check if the backend image with this tag already exists
+          BACKEND_EXISTS=$(aws ecr describe-images --repository-name $BACKEND_ECR_REPOSITORY --image-ids imageTag=$IMAGE_TAG 2>/dev/null && echo "true" || echo "false")
+          # Check if the frontend image with this tag already exists
+          FRONTEND_EXISTS=$(aws ecr describe-images --repository-name $FRONTEND_ECR_REPOSITORY --image-ids imageTag=$IMAGE_TAG 2>/dev/null && echo "true" || echo "false")
+          
+          echo "BACKEND_EXISTS=$BACKEND_EXISTS" >> $GITHUB_ENV
+          echo "FRONTEND_EXISTS=$FRONTEND_EXISTS" >> $GITHUB_ENV
+          
+          echo "backend_exists=$BACKEND_EXISTS" >> $GITHUB_OUTPUT
+          echo "frontend_exists=$FRONTEND_EXISTS" >> $GITHUB_OUTPUT
+      
+      - name: Build and Push Backend Image
+        id: build-backend
         env:
-          ECR_REGISTRY: ${{ needs.login-ecr.outputs.registry }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
+          echo "Building backend image..."
           cd backend
-          docker build -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-  build-frontend:
-    needs: login-ecr
-    runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.push.outputs.image }}
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Print and Validate ECR_REGISTRY
-        run: |
-          echo "ECR_REGISTRY=${{ needs.login-ecr.outputs.registry }}"
-          if [ -z "${{ needs.login-ecr.outputs.registry }}" ]; then
-            echo "::error::ECR_REGISTRY is empty. Cannot proceed."
+          
+          # Build and push with retry logic
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
+            if docker build \
+              --cache-from $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest \
+              --build-arg BUILDKIT_INLINE_CACHE=1 \
+              -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG \
+              -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest .; then
+              
+              echo "Backend image built successfully, pushing to ECR..."
+              
+              if docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG && \
+                 docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest; then
+                SUCCESS=true
+                echo "Backend image pushed successfully"
+              else
+                RETRY_COUNT=$((RETRY_COUNT+1))
+                echo "Failed to push backend image, attempt $RETRY_COUNT of $MAX_RETRIES"
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  sleep 10
+                fi
+              fi
+            else
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              echo "Failed to build backend image, attempt $RETRY_COUNT of $MAX_RETRIES"
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                sleep 10
+              fi
+            fi
+          done
+          
+          if [ "$SUCCESS" != "true" ]; then
+            echo "Failed to build and push backend image after $MAX_RETRIES attempts"
             exit 1
           fi
-
-      - name: Build and Push Frontend
-        id: push
+          
+          echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Build and Push Frontend Image
+        id: build-frontend
         env:
-          ECR_REGISTRY: ${{ needs.login-ecr.outputs.registry }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REACT_APP_API_URL: http://talk2me-backend
         run: |
+          echo "Building frontend image..."
           cd frontend
-          docker build -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
+          
+          # Build and push with retry logic
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
+            if docker build \
+              --cache-from $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest \
+              --build-arg BUILDKIT_INLINE_CACHE=1 \
+              --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
+              -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG \
+              -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest .; then
+              
+              echo "Frontend image built successfully, pushing to ECR..."
+              
+              if docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG && \
+                 docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest; then
+                SUCCESS=true
+                echo "Frontend image pushed successfully"
+              else
+                RETRY_COUNT=$((RETRY_COUNT+1))
+                echo "Failed to push frontend image, attempt $RETRY_COUNT of $MAX_RETRIES"
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  sleep 10
+                fi
+              fi
+            else
+              RETRY_COUNT=$((RETRY_COUNT+1))
+              echo "Failed to build frontend image, attempt $RETRY_COUNT of $MAX_RETRIES"
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                sleep 10
+              fi
+            fi
+          done
+          
+          if [ "$SUCCESS" != "true" ]; then
+            echo "Failed to build and push frontend image after $MAX_RETRIES attempts"
+            exit 1
+          fi
+          
           echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-  save-artifacts:
-    needs: [build-backend, build-frontend, setup-aws]
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
+      
+      - name: Output Image Information
+        run: |
+          echo "Backend Image: ${{ steps.build-backend.outputs.image }}"
+          echo "Frontend Image: ${{ steps.build-frontend.outputs.image }}"
+          echo "AWS Account ID: ${{ steps.get-aws-account.outputs.account_id }}"
+          
+          # Create file with image information for other workflows
           mkdir -p ./artifacts
-          echo "BACKEND_IMAGE=${{ needs.build-backend.outputs.image }}" > ./artifacts/image-info.env
-          echo "FRONTEND_IMAGE=${{ needs.build-frontend.outputs.image }}" >> ./artifacts/image-info.env
-          echo "AWS_ACCOUNT_ID=${{ needs.setup-aws.outputs.aws_account_id }}" >> ./artifacts/image-info.env
+          echo "BACKEND_IMAGE=${{ steps.build-backend.outputs.image }}" > ./artifacts/image-info.env
+          echo "FRONTEND_IMAGE=${{ steps.build-frontend.outputs.image }}" >> ./artifacts/image-info.env
+          echo "AWS_ACCOUNT_ID=${{ steps.get-aws-account.outputs.account_id }}" >> ./artifacts/image-info.env
           echo "IMAGE_TAG=${{ env.IMAGE_TAG }}" >> ./artifacts/image-info.env
-
-      - uses: actions/upload-artifact@v3
+      
+      - name: Save Image Information
+        uses: actions/upload-artifact@v3
         with:
           name: image-info
           path: ./artifacts/image-info.env
