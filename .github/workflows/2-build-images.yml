@@ -190,7 +190,7 @@ jobs:
           echo "IMAGE_TAG=${{ env.IMAGE_TAG }}" >> ./artifacts/image-info.env
 
       - name: Save Image Information
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@latest
         with:
           name: image-info
           path: ./artifacts/image-info.env
