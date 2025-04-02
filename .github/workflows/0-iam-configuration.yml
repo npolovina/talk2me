@@ -98,7 +98,7 @@ jobs:
               "Effect": "Allow",
               "Principal": {
                 "Federated": "$OIDC_PROVIDER_ARN"
-            },
+              },
               "Action": "sts:AssumeRoleWithWebIdentity",
               "Condition": {
                 "StringEquals": {
@@ -107,7 +107,7 @@ jobs:
                 "StringLike": {
                   "$GITHUB_OIDC_PROVIDER_URL:sub": "repo:${{ github.repository }}:*"
                 }
-              }
+              }   
             }
           ]
         }
