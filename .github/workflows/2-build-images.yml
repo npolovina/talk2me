@@ -1,4 +1,4 @@
-name: 2. Build and Push Docker Images
+name: 2. Build and Deploy Application
 
 on:
   workflow_dispatch:
@@ -7,16 +7,28 @@ on:
         description: 'AWS Region'
         required: true
         default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
       image_tag:
         description: 'Docker Image Tag'
         required: true
         default: 'latest'
+      domain_name:
+        description: 'Domain Name'
+        required: true
+        default: 'talk2me-gen-z.com'
 
 env:
   AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
   IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+  DOMAIN_NAME: ${{ github.event.inputs.domain_name }}
+  API_DOMAIN_NAME: api.${{ github.event.inputs.domain_name }}
   BACKEND_ECR_REPOSITORY: talk2me-backend
   FRONTEND_ECR_REPOSITORY: talk2me-frontend
+  ALB_NAME: talk2me-alb
 
 permissions:
   id-token: write
@@ -39,8 +51,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       
       - name: Get AWS Account ID
@@ -50,162 +61,434 @@ jobs:
           echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
           echo "account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
       
-      - name: Create ECR Repositories
-        run: |
-          aws ecr describe-repositories --repository-names $BACKEND_ECR_REPOSITORY 2>/dev/null || \
-          aws ecr create-repository --repository-name $BACKEND_ECR_REPOSITORY --image-scanning-configuration scanOnPush=true
-
-          aws ecr describe-repositories --repository-names $FRONTEND_ECR_REPOSITORY 2>/dev/null || \
-          aws ecr create-repository --repository-name $FRONTEND_ECR_REPOSITORY --image-scanning-configuration scanOnPush=true
-
-          aws ecr put-lifecycle-policy \
-            --repository-name $BACKEND_ECR_REPOSITORY \
-            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
-
-          aws ecr put-lifecycle-policy \
-            --repository-name $FRONTEND_ECR_REPOSITORY \
-            --lifecycle-policy-text '{"rules":[{"rulePriority":1,"description":"Keep only last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
-      
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Cache Docker layers
-        uses: actions/cache@v3
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-            
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
-
-      - name: Check for existing images
-        id: check-images
-        run: |
-          # Check Backend Image
-          BACKEND_IMAGE_DETAILS=$(aws ecr describe-images --repository-name $BACKEND_ECR_REPOSITORY --query "sort_by(imageDetails[?contains(imageTags, '$IMAGE_TAG')], &imagePushedAt)[-1]" --output json)
-          if [ "$BACKEND_IMAGE_DETAILS" != "null" ]; then
-            BACKEND_EXISTS=1
-          else
-            BACKEND_EXISTS=0
-          fi
-
-          # Check Frontend Image
-          FRONTEND_IMAGE_DETAILS=$(aws ecr describe-images --repository-name $FRONTEND_ECR_REPOSITORY --query "sort_by(imageDetails[?contains(imageTags, '$IMAGE_TAG')], &imagePushedAt)[-1]" --output json)
-          if [ "$FRONTEND_IMAGE_DETAILS" != "null" ]; then
-            FRONTEND_EXISTS=1
-          else
-            FRONTEND_EXISTS=0
-          fi
-
-          echo "BACKEND_EXISTS=$BACKEND_EXISTS" >> $GITHUB_ENV
-          echo "FRONTEND_EXISTS=$FRONTEND_EXISTS" >> $GITHUB_ENV
-          echo "backend_exists=$BACKEND_EXISTS" >> $GITHUB_OUTPUT
-          echo "frontend_exists=$FRONTEND_EXISTS" >> $GITHUB_OUTPUT
-
+      
       - name: Build and Push Backend Image
         id: build-backend
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          echo "Building backend image..."
           cd backend
-
-          MAX_RETRIES=3
-          RETRY_COUNT=0
-          SUCCESS=false
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
-            if docker build \
-              --cache-from $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest \
-              --build-arg BUILDKIT_INLINE_CACHE=1 \
-              -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG \
-              -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest .; then
-
-              echo "Backend image built. Pushing..."
-              if docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG && \
-                 docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:latest; then
-                SUCCESS=true
-              else
-                echo "Push failed. Retrying..."
-                RETRY_COUNT=$((RETRY_COUNT+1))
-                sleep 10
-              fi
-            else
-              echo "Build failed. Retrying..."
-              RETRY_COUNT=$((RETRY_COUNT+1))
-              sleep 10
-            fi
-          done
-
-          if [ "$SUCCESS" != "true" ]; then
-            echo "Failed to build/push backend image after $MAX_RETRIES attempts"
-            exit 1
-          fi
-
+          docker build -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
+      
       - name: Build and Push Frontend Image
         id: build-frontend
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REACT_APP_API_URL: http://talk2me-backend
+          REACT_APP_API_URL: https://${{ env.API_DOMAIN_NAME }}
         run: |
-          echo "Building frontend image..."
           cd frontend
-
-          MAX_RETRIES=3
-          RETRY_COUNT=0
-          SUCCESS=false
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
-            if docker build \
-              --cache-from $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest \
-              --build-arg BUILDKIT_INLINE_CACHE=1 \
-              --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
-              -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG \
-              -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest .; then
-
-              echo "Frontend image built. Pushing..."
-              if docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG && \
-                 docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:latest; then
-                SUCCESS=true
-              else
-                echo "Push failed. Retrying..."
-                RETRY_COUNT=$((RETRY_COUNT+1))
-                sleep 10
-              fi
-            else
-              echo "Build failed. Retrying..."
-              RETRY_COUNT=$((RETRY_COUNT+1))
-              sleep 10
-            fi
-          done
-
-          if [ "$SUCCESS" != "true" ]; then
-            echo "Failed to build/push frontend image after $MAX_RETRIES attempts"
-            exit 1
-          fi
-
+          docker build \
+            --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
+            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
           echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      - name: Output Image Information
+      
+      - name: Summary of Build Step
         run: |
+          echo "==== Docker Images Built and Pushed ===="
           echo "Backend Image: ${{ steps.build-backend.outputs.image }}"
           echo "Frontend Image: ${{ steps.build-frontend.outputs.image }}"
-          echo "AWS Account ID: ${{ steps.get-aws-account.outputs.account_id }}"
-
-          mkdir -p ./artifacts
-          echo "BACKEND_IMAGE=${{ steps.build-backend.outputs.image }}" > ./artifacts/image-info.env
-          echo "FRONTEND_IMAGE=${{ steps.build-frontend.outputs.image }}" >> ./artifacts/image-info.env
-          echo "AWS_ACCOUNT_ID=${{ steps.get-aws-account.outputs.account_id }}" >> ./artifacts/image-info.env
-          echo "IMAGE_TAG=${{ env.IMAGE_TAG }}" >> ./artifacts/image-info.env
-
-      - name: Save Image Information
-        uses: actions/upload-artifact@v4
+          echo "These images will be used in the deployment step"
+  
+  deploy-to-eks:
+    name: Deploy to EKS
+    needs: build-and-push-images
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          name: image-info
-          path: ./artifacts/image-info.env
-          retention-days: 1
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Get ACM Certificate ARN
+        id: get-certificate
+        run: |
+          echo "Finding ACM certificate for $DOMAIN_NAME..."
+          
+          # Try to find certificate for domain in ACM
+          CERT_ARN=$(aws acm list-certificates --query "CertificateSummaryList[?contains(DomainName, '*.${DOMAIN_NAME}') || DomainName=='${DOMAIN_NAME}'].CertificateArn" --output text | head -1)
+          
+          if [ -n "$CERT_ARN" ]; then
+            echo "Found certificate: $CERT_ARN"
+            echo "CERTIFICATE_ARN=$CERT_ARN" >> $GITHUB_ENV
+            echo "certificate_found=true" >> $GITHUB_OUTPUT
+          else
+            echo "No certificate found for $DOMAIN_NAME"
+            echo "certificate_found=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create Backend Deployment Template
+        run: |
+          mkdir -p k8s
+          
+          cat << EOF > k8s/backend-deployment.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-backend
+            namespace: talk2me
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-backend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-backend
+              spec:
+                containers:
+                - name: backend
+                  image: ${needs.build-and-push-images.outputs.aws_account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${BACKEND_ECR_REPOSITORY}:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: DEEPSEEK_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: talk2me-secrets
+                        key: deepseek-api-key
+                  resources:
+                    requests:
+                      memory: "256Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "512Mi"
+                      cpu: "500m"
+                  readinessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 5
+                    periodSeconds: 10
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 15
+                    periodSeconds: 20
+          EOF
+          
+          cat << EOF > k8s/backend-service.yaml
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-backend
+            namespace: talk2me
+          spec:
+            selector:
+              app: talk2me-backend
+            ports:
+            - port: 80
+              targetPort: 8000
+            type: ClusterIP
+          EOF
+      
+      - name: Create Frontend Deployment Template
+        run: |
+          cat << EOF > k8s/frontend-deployment.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: talk2me-frontend
+            namespace: talk2me
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: talk2me-frontend
+            template:
+              metadata:
+                labels:
+                  app: talk2me-frontend
+              spec:
+                containers:
+                - name: frontend
+                  image: ${needs.build-and-push-images.outputs.aws_account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${FRONTEND_ECR_REPOSITORY}:${IMAGE_TAG}
+                  ports:
+                  - containerPort: 80
+                  resources:
+                    requests:
+                      memory: "128Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "256Mi"
+                      cpu: "300m"
+          EOF
+          
+          cat << EOF > k8s/frontend-service.yaml
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: talk2me-frontend
+            namespace: talk2me
+          spec:
+            selector:
+              app: talk2me-frontend
+            ports:
+            - port: 80
+              targetPort: 80
+            type: ClusterIP
+          EOF
+      
+      - name: Create Ingress Configuration
+        run: |
+          cat << EOF > k8s/ingress.yaml
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: talk2me
+            annotations:
+              kubernetes.io/ingress.class: "alb"
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/load-balancer-name: ${ALB_NAME}
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+              alb.ingress.kubernetes.io/ssl-redirect: '443'
+              alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
+              external-dns.alpha.kubernetes.io/hostname: "${DOMAIN_NAME},${API_DOMAIN_NAME}"
+              alb.ingress.kubernetes.io/group.name: talk2me
+          EOF
+          
+          # Add certificate ARN if available
+          if [ "${{ steps.get-certificate.outputs.certificate_found }}" == "true" ]; then
+            echo "    alb.ingress.kubernetes.io/certificate-arn: ${CERTIFICATE_ARN}" >> k8s/ingress.yaml
+          fi
+          
+          # Add rules
+          cat << EOF >> k8s/ingress.yaml
+          spec:
+            rules:
+            - host: ${DOMAIN_NAME}
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-frontend
+                      port:
+                        number: 80
+            - host: ${API_DOMAIN_NAME}
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: talk2me-backend
+                      port:
+                        number: 80
+          EOF
+      
+      - name: Apply Kubernetes Configurations
+        run: |
+          # Make sure namespace exists
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Apply backend configurations
+          kubectl apply -f k8s/backend-deployment.yaml
+          kubectl apply -f k8s/backend-service.yaml
+          
+          # Apply frontend configurations
+          kubectl apply -f k8s/frontend-deployment.yaml
+          kubectl apply -f k8s/frontend-service.yaml
+          
+          # Apply ingress configuration
+          kubectl apply -f k8s/ingress.yaml
+      
+      - name: Wait for deployments to be ready
+        run: |
+          echo "Waiting for backend deployment to be ready..."
+          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=300s
+          
+          echo "Waiting for frontend deployment to be ready..."
+          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=300s
+      
+      - name: Wait for ingress and load balancer
+        id: get-lb
+        run: |
+          echo "Waiting for ingress to get an address (this may take a few minutes)..."
+          
+          # Check initial ingress status
+          kubectl describe ingress talk2me-ingress -n talk2me
+          
+          # Wait for the ingress to get an address
+          ATTEMPTS=0
+          MAX_ATTEMPTS=45
+          SLEEP_SECONDS=20
+          
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            LB_ADDRESS=$(kubectl get ingress talk2me-ingress -n talk2me -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+            
+            if [ -n "$LB_ADDRESS" ]; then
+              echo "Ingress load balancer is available at: $LB_ADDRESS"
+              echo "LB_ADDRESS=$LB_ADDRESS" >> $GITHUB_ENV
+              echo "lb_address=$LB_ADDRESS" >> $GITHUB_OUTPUT
+              break
+            fi
+            
+            echo "Waiting for load balancer address... Attempt $(($ATTEMPTS+1))/$MAX_ATTEMPTS"
+            
+            # Check for potential issues every few attempts
+            if [ $(($ATTEMPTS % 5)) -eq 0 ]; then
+              echo "-----------------------------------"
+              echo "Checking ingress status:"
+              kubectl describe ingress talk2me-ingress -n talk2me
+              
+              echo "-----------------------------------"
+              echo "Checking AWS Load Balancer Controller logs:"
+              kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=20 || echo "Failed to get logs"
+            fi
+            
+            ATTEMPTS=$((ATTEMPTS+1))
+            sleep $SLEEP_SECONDS
+          done
+          
+          if [ -z "$LB_ADDRESS" ]; then
+            echo "Warning: Load balancer address not available after several attempts"
+            
+            # Try to find the ALB directly in AWS
+            AWS_ALB_DNS=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
+            
+            if [ -n "$AWS_ALB_DNS" ] && [ "$AWS_ALB_DNS" != "None" ]; then
+              echo "Found ALB in AWS: $AWS_ALB_DNS"
+              echo "LB_ADDRESS=$AWS_ALB_DNS" >> $GITHUB_ENV
+              echo "lb_address=$AWS_ALB_DNS" >> $GITHUB_OUTPUT
+            else
+              echo "Could not find ALB in AWS."
+              echo "lb_address=not_found" >> $GITHUB_OUTPUT
+            fi
+          fi
+      
+      - name: Setup Route53 DNS if needed
+        if: steps.get-lb.outputs.lb_address != 'not_found'
+        run: |
+          echo "Checking if Route53 hosted zone exists for $DOMAIN_NAME..."
+          
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN_NAME --query "HostedZones[?Name=='$DOMAIN_NAME.'].Id" --output text | cut -d/ -f3)
+          
+          if [ -z "$ZONE_ID" ]; then
+            echo "Creating new hosted zone for $DOMAIN_NAME"
+            
+            ZONE_RESULT=$(aws route53 create-hosted-zone \
+              --name $DOMAIN_NAME \
+              --caller-reference "talk2me-$(date +%s)" \
+              --hosted-zone-config Comment="Hosted zone for Talk2Me application")
+            
+            # Extract zone ID from response
+            ZONE_ID=$(echo $ZONE_RESULT | jq -r '.HostedZone.Id' | cut -d/ -f3)
+            echo "Created new hosted zone with ID: $ZONE_ID"
+            
+            # Output nameservers for domain configuration
+            echo "Please configure your domain registrar with the following nameservers:"
+            echo $ZONE_RESULT | jq -r '.DelegationSet.NameServers[]' | sed 's/^/  - /'
+          else
+            echo "Hosted zone exists with ID: $ZONE_ID"
+          fi
+          
+          echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+          
+          # Get the ALB hosted zone ID
+          ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query 'LoadBalancers[0].CanonicalHostedZoneId' --output text 2>/dev/null || echo "Z35SXDOTRQ7X7K")
+          
+          # If we couldn't get the hosted zone ID, use the default for us-east-1
+          if [ -z "$ALB_HOSTED_ZONE_ID" ] || [ "$ALB_HOSTED_ZONE_ID" == "None" ]; then
+            ALB_HOSTED_ZONE_ID="Z35SXDOTRQ7X7K"  # Default for us-east-1
+          fi
+          
+          # Create JSON for DNS change batch
+          cat > dns-changes.json << EOF
+          {
+            "Changes": [
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$DOMAIN_NAME",
+                  "Type": "A",
+                  "AliasTarget": {
+                    "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
+                    "DNSName": "$LB_ADDRESS",
+                    "EvaluateTargetHealth": true
+                  }
+                }
+              },
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "$API_DOMAIN_NAME",
+                  "Type": "A",
+                  "AliasTarget": {
+                    "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
+                    "DNSName": "$LB_ADDRESS",
+                    "EvaluateTargetHealth": true
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Apply the DNS changes
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id $ZONE_ID \
+            --change-batch file://dns-changes.json
+          
+          echo "DNS records have been configured for $DOMAIN_NAME and $API_DOMAIN_NAME"
+          echo "DNS changes take time to propagate. Please allow 5-10 minutes."
+      
+      - name: Deployment Summary
+        run: |
+          echo "=========== Deployment Summary ==========="
+          echo "Application deployed to EKS cluster: $CLUSTER_NAME"
+          echo "Region: $AWS_REGION"
+          echo "Image tag: $IMAGE_TAG"
+          
+          # Check all resources
+          echo ""
+          echo "Kubernetes resources:"
+          echo "- Deployments:"
+          kubectl get deployments -n talk2me
+          
+          echo "- Services:"
+          kubectl get services -n talk2me
+          
+          echo "- Ingress:"
+          kubectl get ingress -n talk2me
+          
+          echo "- Pods:"
+          kubectl get pods -n talk2me
+          
+          # Show access information
+          echo ""
+          echo "Access Information:"
+          if [ -n "$LB_ADDRESS" ]; then
+            echo "Load Balancer Address: $LB_ADDRESS"
+            echo "Frontend URL: https://$DOMAIN_NAME"
+            echo "Backend API URL: https://$API_DOMAIN_NAME"
+          else
+            echo "Load Balancer Address: Not available"
+            echo "Please check AWS Console for more information."
+          fi
+          
+          # Note about DNS propagation
+          if [ -n "$ZONE_ID" ] && [ -n "$LB_ADDRESS" ]; then
+            echo ""
+            echo "DNS records have been updated, but changes may take time to propagate."
+            echo "If the application is not accessible immediately, please wait 5-10 minutes."
+          fi
