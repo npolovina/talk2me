@@ -565,3 +565,7 @@
 2025-04-01 19:33:49,840 - talk2me - INFO - Response length: 743 characters
 2025-04-01 19:33:49,841 - talk2me - INFO - Successfully generated AI response
 2025-04-01 19:33:49,842 - talk2me - INFO - Request 1743550418.2913818 completed with status code 200
+2025-04-02 11:29:14,038 - talk2me - INFO - Request 1743607754.0230446 started: GET /
+2025-04-02 11:29:14,054 - talk2me - INFO - Request origin: No Origin
+2025-04-02 11:29:14,075 - talk2me - INFO - Root endpoint accessed
+2025-04-02 11:29:14,099 - talk2me - INFO - Request 1743607754.0230446 completed with status code 200
