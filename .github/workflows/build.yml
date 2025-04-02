@@ -1,5 +1,5 @@
 # .github/workflows/build.yml
-name: 1. Build and Push Images
+# name: 1. Build and Push Images
 
 on:
   push:

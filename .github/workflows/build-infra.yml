@@ -1,5 +1,5 @@
 # .github/workflows/infrastructure.yml
-name: 1. Setup Infrastructure
+# name: 1. Setup Infrastructure
 
 on:
   workflow_dispatch:
