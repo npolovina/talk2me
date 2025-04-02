@@ -102,11 +102,19 @@ jobs:
           echo "Found backend Dockerfile at: $BACKEND_DOCKERFILE"
           echo "Building from directory: $BACKEND_DIR"
           
-          # Create a Dockerfile.pinned with explicit SHA references
-          cat "$BACKEND_DOCKERFILE" | sed 's|FROM node:18-alpine|FROM node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e|g' > "${BACKEND_DIR}/Dockerfile.pinned"
+          # Generate a unique build timestamp to force new image creation
+          BUILD_TIMESTAMP=$(date +%s)
           
-          # Build with both the user-specified tag and the SHA tag using pinned base image
-          docker build -f "${BACKEND_DIR}/Dockerfile.pinned" -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG "$BACKEND_DIR"
+          # Use the original Dockerfile but pass a build arg to force rebuild
+          cat "$BACKEND_DOCKERFILE" > "${BACKEND_DIR}/Dockerfile.clean"
+          
+          # Build with both the user-specified tag and the SHA tag, forcing a clean build
+          docker build --no-cache --pull \
+            --build-arg BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
+            -f "${BACKEND_DIR}/Dockerfile.clean" \
+            -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG \
+            "$BACKEND_DIR"
           
           # Push both tags
           docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
@@ -133,12 +141,17 @@ jobs:
           echo "Found frontend Dockerfile at: $FRONTEND_DOCKERFILE"
           echo "Building from directory: $FRONTEND_DIR"
           
-          # Create a Dockerfile.pinned with explicit SHA references
-          cat "$FRONTEND_DOCKERFILE" | sed 's|FROM node:18-alpine|FROM node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e|g' | sed 's|FROM nginx:alpine|FROM nginx:alpine@sha256:4ff102c5d78d254a6f0da062b3cf39eaf07f01eec0927fd21e219d0af8bc0591|g' > "${FRONTEND_DIR}/Dockerfile.pinned"
+          # Generate a unique build timestamp to force new image creation
+          BUILD_TIMESTAMP=$(date +%s)
           
-          # Build with both the user-specified tag and the SHA tag using pinned base image
-          docker build -f "${FRONTEND_DIR}/Dockerfile.pinned" \
+          # Use the original Dockerfile
+          cat "$FRONTEND_DOCKERFILE" > "${FRONTEND_DIR}/Dockerfile.clean"
+          
+          # Build with both the user-specified tag and the SHA tag, forcing a clean build
+          docker build --no-cache --pull \
+            --build-arg BUILD_TIMESTAMP=$BUILD_TIMESTAMP \
             --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
+            -f "${FRONTEND_DIR}/Dockerfile.clean" \
             -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG \
             "$FRONTEND_DIR"
