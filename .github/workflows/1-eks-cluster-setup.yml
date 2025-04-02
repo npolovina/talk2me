@@ -36,22 +36,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-        uses: actions/checkout@v3
+      uses: actions/checkout@v3
         
     - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region: ${{ env.AWS_REGION }}
     
     - name: Install eksctl
-        run: |
+      run: |
         curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
         sudo mv /tmp/eksctl /usr/local/bin
         eksctl version
     
     - name: Create EKS cluster
-        run: |
+      run: |
         # Parse node group size parameters
         IFS=',' read -ra SIZES <<< "${{ github.event.inputs.node_group_size }}"
         MIN_SIZE=${SIZES[0]}
