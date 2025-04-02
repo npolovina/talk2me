@@ -43,6 +43,7 @@ jobs:
       backend_image: ${{ steps.build-backend.outputs.image }}
       frontend_image: ${{ steps.build-frontend.outputs.image }}
       aws_account_id: ${{ steps.get-aws-account.outputs.account_id }}
+      sha_tag: ${{ steps.sha-tag.outputs.sha_short }}
     
     steps:
       - name: Checkout code
@@ -61,6 +62,25 @@ jobs:
           echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
           echo "account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
       
+      - name: Generate short SHA for tag
+        id: sha-tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "Creating image tag with: $SHORT_SHA"
+          echo "sha_short=$SHORT_SHA" >> $GITHUB_OUTPUT
+          
+          # Create a combined tag with user input and SHA
+          if [ "$IMAGE_TAG" == "latest" ]; then
+            # If user specified "latest", just use the SHA
+            COMBINED_TAG="$SHORT_SHA"
+          else
+            # Otherwise combine user tag and SHA
+            COMBINED_TAG="${IMAGE_TAG}-${SHORT_SHA}"
+          fi
+          
+          echo "COMBINED_TAG=$COMBINED_TAG" >> $GITHUB_ENV
+          echo "combined_tag=$COMBINED_TAG" >> $GITHUB_OUTPUT
+      
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
@@ -70,10 +90,30 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          cd backend
-          docker build -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG .
+          # Find the backend Dockerfile
+          BACKEND_DOCKERFILE=$(find . -type f -name "Dockerfile" -path "*/backend/*" | head -1)
+          
+          if [ -z "$BACKEND_DOCKERFILE" ]; then
+            echo "Error: Could not find a Dockerfile in the backend directory"
+            exit 1
+          fi
+          
+          BACKEND_DIR=$(dirname "$BACKEND_DOCKERFILE")
+          echo "Found backend Dockerfile at: $BACKEND_DOCKERFILE"
+          echo "Building from directory: $BACKEND_DIR"
+          
+          # Create a Dockerfile.pinned with explicit SHA references
+          cat "$BACKEND_DOCKERFILE" | sed 's|FROM node:18-alpine|FROM node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e|g' > "${BACKEND_DIR}/Dockerfile.pinned"
+          
+          # Build with both the user-specified tag and the SHA tag using pinned base image
+          docker build -f "${BACKEND_DIR}/Dockerfile.pinned" -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG "$BACKEND_DIR"
+          
+          # Push both tags
           docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG
+          
+          # Use the combined tag for deployment
+          echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG" >> $GITHUB_OUTPUT
       
       - name: Build and Push Frontend Image
         id: build-frontend
@@ -81,16 +121,41 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REACT_APP_API_URL: https://${{ env.API_DOMAIN_NAME }}
         run: |
-          cd frontend
-          docker build \
+          # Find the frontend Dockerfile
+          FRONTEND_DOCKERFILE=$(find . -type f -name "Dockerfile" -path "*/frontend/*" | head -1)
+          
+          if [ -z "$FRONTEND_DOCKERFILE" ]; then
+            echo "Error: Could not find a Dockerfile in the frontend directory"
+            exit 1
+          fi
+          
+          FRONTEND_DIR=$(dirname "$FRONTEND_DOCKERFILE")
+          echo "Found frontend Dockerfile at: $FRONTEND_DOCKERFILE"
+          echo "Building from directory: $FRONTEND_DIR"
+          
+          # Create a Dockerfile.pinned with explicit SHA references
+          cat "$FRONTEND_DOCKERFILE" | sed 's|FROM node:18-alpine|FROM node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e|g' | sed 's|FROM nginx:alpine|FROM nginx:alpine@sha256:4ff102c5d78d254a6f0da062b3cf39eaf07f01eec0927fd21e219d0af8bc0591|g' > "${FRONTEND_DIR}/Dockerfile.pinned"
+          
+          # Build with both the user-specified tag and the SHA tag using pinned base image
+          docker build -f "${FRONTEND_DIR}/Dockerfile.pinned" \
             --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
-            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG .
+            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG \
+            "$FRONTEND_DIR"
+          
+          # Push both tags
           docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG
+          
+          # Use the combined tag for deployment
+          echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG" >> $GITHUB_OUTPUT
       
       - name: Summary of Build Step
         run: |
           echo "==== Docker Images Built and Pushed ===="
+          echo "Commit SHA: ${GITHUB_SHA}"
+          echo "Short SHA Tag: ${{ steps.sha-tag.outputs.sha_short }}"
+          echo "Combined Tag: $COMBINED_TAG"
           echo "Backend Image: ${{ steps.build-backend.outputs.image }}"
           echo "Frontend Image: ${{ steps.build-frontend.outputs.image }}"
           echo "These images will be used in the deployment step"
