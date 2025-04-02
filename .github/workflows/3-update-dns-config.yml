@@ -1,4 +1,4 @@
-name: 4. Update DNS Configuration
+name: 3. Update DNS Configuration
 
 on:
   workflow_dispatch:

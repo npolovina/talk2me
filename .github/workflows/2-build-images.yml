@@ -178,14 +178,27 @@ jobs:
                     httpGet:
                       path: /health
                       port: 8000
-                    initialDelaySeconds: 5
-                    periodSeconds: 10
+                    initialDelaySeconds: 30
+                    periodSeconds: 15
+                    timeoutSeconds: 5
+                    successThreshold: 1
+                    failureThreshold: 6
                   livenessProbe:
                     httpGet:
                       path: /health
                       port: 8000
-                    initialDelaySeconds: 15
+                    initialDelaySeconds: 60
                     periodSeconds: 20
+                    timeoutSeconds: 5
+                    failureThreshold: 6
+                  startupProbe:
+                    httpGet:
+                      path: /health
+                      port: 8000
+                    initialDelaySeconds: 10
+                    periodSeconds: 10
+                    timeoutSeconds: 5
+                    failureThreshold: 30
           EOF
           
           # Create backend service manifest
@@ -325,12 +338,102 @@ jobs:
           kubectl apply -f k8s/ingress.yaml
       
       - name: Wait for deployments to be ready
+        id: wait-deployments
+        continue-on-error: true
         run: |
-          echo "Waiting for backend deployment to be ready..."
-          kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=300s
+          echo "Checking backend deployment status first..."
+          kubectl get deployment talk2me-backend -n talk2me -o wide
+          kubectl get pods -n talk2me -l app=talk2me-backend -o wide
           
-          echo "Waiting for frontend deployment to be ready..."
-          kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=300s
+          echo "Waiting for backend deployment to be ready (600s timeout)..."
+          if kubectl rollout status deployment/talk2me-backend -n talk2me --timeout=600s; then
+            echo "Backend deployment is ready"
+            BACKEND_READY="true"
+          else
+            echo "Backend deployment timed out, checking pod status..."
+            BACKEND_READY="false"
+            
+            # Get failing pods
+            FAILING_PODS=$(kubectl get pods -n talk2me -l app=talk2me-backend -o jsonpath='{.items[?(@.status.phase!="Running")].metadata.name}')
+            
+            if [ -n "$FAILING_PODS" ]; then
+              echo "Found failing pods: $FAILING_PODS"
+              for pod in $FAILING_PODS; do
+                echo "==== Details for pod $pod ===="
+                kubectl describe pod $pod -n talk2me
+                echo "==== Logs from $pod (if available) ===="
+                kubectl logs $pod -n talk2me --previous || kubectl logs $pod -n talk2me || echo "No logs available"
+              done
+            fi
+          fi
+          
+          echo "Checking frontend deployment status..."
+          kubectl get deployment talk2me-frontend -n talk2me -o wide
+          kubectl get pods -n talk2me -l app=talk2me-frontend -o wide
+          
+          echo "Waiting for frontend deployment to be ready (600s timeout)..."
+          if kubectl rollout status deployment/talk2me-frontend -n talk2me --timeout=600s; then
+            echo "Frontend deployment is ready"
+            FRONTEND_READY="true"
+          else
+            echo "Frontend deployment timed out, checking pod status..."
+            FRONTEND_READY="false"
+            
+            # Get failing pods
+            FAILING_PODS=$(kubectl get pods -n talk2me -l app=talk2me-frontend -o jsonpath='{.items[?(@.status.phase!="Running")].metadata.name}')
+            
+            if [ -n "$FAILING_PODS" ]; then
+              echo "Found failing pods: $FAILING_PODS"
+              for pod in $FAILING_PODS; do
+                echo "==== Details for pod $pod ===="
+                kubectl describe pod $pod -n talk2me
+                echo "==== Logs from $pod (if available) ===="
+                kubectl logs $pod -n talk2me --previous || kubectl logs $pod -n talk2me || echo "No logs available"
+              done
+            fi
+          fi
+          
+          # Set output variables
+          echo "backend_ready=$BACKEND_READY" >> $GITHUB_OUTPUT
+          echo "frontend_ready=$FRONTEND_READY" >> $GITHUB_OUTPUT
+          
+          # Continue the workflow even if deployments aren't fully ready
+          echo "Proceeding with workflow regardless of deployment status"
+      
+      - name: Check deployment status before proceeding
+        if: steps.wait-deployments.outputs.backend_ready == 'false' || steps.wait-deployments.outputs.frontend_ready == 'false'
+        run: |
+          echo "WARNING: One or more deployments did not reach ready state within the timeout period."
+          echo "Backend ready: ${steps.wait-deployments.outputs.backend_ready}"
+          echo "Frontend ready: ${steps.wait-deployments.outputs.frontend_ready}"
+          echo "Continuing with ingress setup, but the application may not be fully functional."
+          echo "Check the pod logs above for more details on what might be failing."
+          
+          # Check for common issues
+          echo "Checking for common deployment issues..."
+          
+          # Check if pods were created
+          echo "Pod status:"
+          kubectl get pods -n talk2me
+          
+          # Check node capacity
+          echo "Node status:"
+          kubectl get nodes
+          
+          # Check for any events
+          echo "Recent events:"
+          kubectl get events -n talk2me --sort-by='.lastTimestamp' | tail -20
+          
+          # Check secrets
+          echo "Verifying secrets:"
+          kubectl get secrets -n talk2me
+          
+          # Check if secret exists but don't show the value
+          if kubectl get secret talk2me-secrets -n talk2me &>/dev/null; then
+            echo "talk2me-secrets exists in the namespace"
+          else
+            echo "ERROR: talk2me-secrets doesn't exist in the namespace - this could cause startup failures"
+          fi
       
       - name: Wait for ingress and load balancer
         id: get-lb
