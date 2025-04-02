@@ -19,6 +19,15 @@ on:
         description: 'EC2 Instance Type for Nodes'
         required: true
         default: 't3.medium'
+      kubernetes_version:
+        description: 'Kubernetes Version'
+        required: true
+        default: '1.28'
+      enable_autoscaler:
+        description: 'Enable Cluster Autoscaler'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   AWS_REGION: ${{ github.event.inputs.region }}
@@ -61,14 +70,79 @@ jobs:
           eksctl create cluster \
             --name $CLUSTER_NAME \
             --region $AWS_REGION \
-            --version 1.28 \
+            --version ${{ github.event.inputs.kubernetes_version }} \
             --nodegroup-name standard-nodes \
             --node-type ${{ github.event.inputs.node_instance_type }} \
             --nodes-min $MIN_SIZE \
             --nodes $DESIRED_SIZE \
             --nodes-max $MAX_SIZE \
             --with-oidc \
-            --managed
+            --managed \
+            --asg-access
+            
+      - name: Update all EKS add-ons to compatible versions
+        run: |
+          echo "Updating all EKS add-ons to compatible versions for EKS 1.28..."
+          
+          # Ensure kubectl can connect to the cluster
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          
+          # Define the add-ons to ensure are properly configured
+          ADDONS=("coredns" "kube-proxy" "vpc-cni" "aws-ebs-csi-driver")
+          
+          for ADDON in "${ADDONS[@]}"; do
+            echo "Processing add-on: $ADDON"
+            
+            # Get latest compatible version for the add-on
+            LATEST_VERSION=$(aws eks describe-addon-versions \
+              --addon-name $ADDON \
+              --kubernetes-version 1.28 \
+              --query "addons[].addonVersions[0].addonVersion" \
+              --output text)
+              
+            if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "None" ]; then
+              echo "No version found for $ADDON, skipping..."
+              continue
+            fi
+            
+            echo "Latest compatible $ADDON version: $LATEST_VERSION"
+            
+            # Check if add-on is already installed
+            ADDON_STATUS=$(aws eks describe-addon \
+              --cluster-name $CLUSTER_NAME \
+              --addon-name $ADDON \
+              --query "addon.status" \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+            
+            if [ "$ADDON_STATUS" == "NOT_FOUND" ]; then
+              echo "Creating $ADDON add-on with version $LATEST_VERSION"
+              aws eks create-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name $ADDON \
+                --addon-version $LATEST_VERSION
+            else
+              echo "Updating $ADDON add-on to version $LATEST_VERSION"
+              aws eks update-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name $ADDON \
+                --addon-version $LATEST_VERSION \
+                --resolve-conflicts PRESERVE
+            fi
+            
+            # For add-ons that have deployments, wait for them to be ready
+            if [ "$ADDON" == "coredns" ]; then
+              echo "Waiting for CoreDNS to be ready..."
+              kubectl -n kube-system rollout status deployment coredns --timeout=180s
+            elif [ "$ADDON" == "kube-proxy" ]; then
+              echo "Waiting for kube-proxy to be ready..."
+              kubectl -n kube-system rollout status daemonset kube-proxy --timeout=180s
+            elif [ "$ADDON" == "aws-ebs-csi-driver" ]; then
+              echo "Waiting for EBS CSI driver to be ready..."
+              kubectl -n kube-system rollout status deployment ebs-csi-controller --timeout=180s
+            fi
+          done
+          
+          echo "All add-ons have been configured"
       
       - name: Tag subnets for Load Balancer Controller
         run: |
@@ -227,3 +301,107 @@ jobs:
           # Check controller logs
           echo "AWS Load Balancer Controller logs:"
           kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=50
+          
+      - name: Verify all add-ons status
+        run: |
+          echo "Verifying status of all EKS add-ons..."
+          
+          # Check status of all managed add-ons
+          aws eks list-addons --cluster-name $CLUSTER_NAME --region $AWS_REGION
+          
+          # Verify all add-ons are in ACTIVE state
+          ADDONS=$(aws eks list-addons --cluster-name $CLUSTER_NAME --region $AWS_REGION --query "addons" --output text)
+          for ADDON in $ADDONS; do
+            STATUS=$(aws eks describe-addon --cluster-name $CLUSTER_NAME --addon-name $ADDON --region $AWS_REGION --query "addon.status" --output text)
+            echo "$ADDON status: $STATUS"
+            if [ "$STATUS" != "ACTIVE" ]; then
+              echo "Warning: $ADDON is not in ACTIVE state. Current state: $STATUS"
+            fi
+          done
+          
+          # Verify CoreDNS
+          echo "Verifying CoreDNS pods..."
+          kubectl get pods -n kube-system -l k8s-app=kube-dns
+          
+          # Verify kube-proxy
+          echo "Verifying kube-proxy pods..."
+          kubectl get pods -n kube-system -l k8s-app=kube-proxy
+          
+          # Verify vpc-cni
+          echo "Verifying aws-node (vpc-cni) pods..."
+          kubectl get pods -n kube-system -l k8s-app=aws-node
+          
+          # Verify EBS CSI Driver if installed
+          if kubectl get pods -n kube-system -l app=ebs-csi-controller 2>/dev/null | grep -q ebs-csi-controller; then
+            echo "Verifying EBS CSI Driver pods..."
+            kubectl get pods -n kube-system -l app=ebs-csi-controller
+          fi
+          
+      - name: Configure Cluster Autoscaler (optional)
+        if: ${{ github.event.inputs.enable_autoscaler == 'true' }}
+        run: |
+          echo "Setting up Cluster Autoscaler..."
+          
+          # Create IAM policy for Cluster Autoscaler
+          cat > cluster-autoscaler-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "autoscaling:DescribeAutoScalingGroups",
+                  "autoscaling:DescribeAutoScalingInstances",
+                  "autoscaling:DescribeLaunchConfigurations",
+                  "autoscaling:DescribeTags",
+                  "autoscaling:SetDesiredCapacity",
+                  "autoscaling:TerminateInstanceInAutoScalingGroup",
+                  "ec2:DescribeLaunchTemplateVersions"
+                ],
+                "Resource": ["*"]
+              }
+            ]
+          }
+          EOF
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name ClusterAutoscalerPolicy \
+            --policy-document file://cluster-autoscaler-policy.json || echo "Policy may already exist - continuing"
+          
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=cluster-autoscaler \
+            --attach-policy-arn=arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):policy/ClusterAutoscalerPolicy \
+            --override-existing-serviceaccounts \
+            --approve
+            
+          # Install Cluster Autoscaler
+          helm repo add autoscaler https://kubernetes.github.io/autoscaler
+          helm repo update
+          
+          helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+            --set autoDiscovery.clusterName=$CLUSTER_NAME \
+            --set awsRegion=$AWS_REGION \
+            --set rbac.serviceAccount.create=false \
+            --set rbac.serviceAccount.name=cluster-autoscaler \
+            --namespace kube-system
+            
+          # Wait for Cluster Autoscaler to be ready
+          echo "Waiting for Cluster Autoscaler to be ready..."
+          kubectl rollout status deployment cluster-autoscaler -n kube-system --timeout=180s
+          
+      - name: Export kubeconfig for future workflows
+        run: |
+          # Create kubeconfig that can be used in subsequent workflows
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          
+          # Save the kubeconfig to GitHub Outputs for reference in other workflow jobs
+          echo "kubeconfig_path=$HOME/.kube/config" >> $GITHUB_OUTPUT
+          
+          echo "EKS Cluster setup complete. The cluster is now ready for application deployments."
+          echo "Cluster name: $CLUSTER_NAME"
+          echo "Region: $AWS_REGION"
+          echo "All add-ons and controllers have been configured and validated."
