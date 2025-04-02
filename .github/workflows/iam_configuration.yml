@@ -131,6 +131,7 @@ jobs:
                     "iam:ListAttachedRolePolicies",
                     "iam:PassRole",
                     "iam:CreateServiceLinkedRole",
+                    "iam:TagRole",
                     "route53:*",
                     "autoscaling:*",
                     "elasticloadbalancing:*",
@@ -152,6 +153,50 @@ jobs:
           else
             POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
             echo "IAM policy for Talk2Me deployment already exists"
+            
+            # Update the policy to include the missing permission
+            echo '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "eks:*",
+                    "ec2:*",
+                    "ecr:*",
+                    "iam:GetRole",
+                    "iam:CreateRole",
+                    "iam:DeleteRole",
+                    "iam:AttachRolePolicy",
+                    "iam:DetachRolePolicy",
+                    "iam:PutRolePolicy",
+                    "iam:GetRolePolicy",
+                    "iam:DeleteRolePolicy",
+                    "iam:CreatePolicy",
+                    "iam:ListPolicies",
+                    "iam:GetPolicy",
+                    "iam:ListAttachedRolePolicies",
+                    "iam:PassRole",
+                    "iam:CreateServiceLinkedRole",
+                    "iam:TagRole",
+                    "route53:*",
+                    "autoscaling:*",
+                    "elasticloadbalancing:*",
+                    "cloudformation:*",
+                    "acm:*"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }' > policy.json
+            
+            # Create a new version of the policy
+            aws iam create-policy-version \
+              --policy-arn $POLICY_ARN \
+              --policy-document file://policy.json \
+              --set-as-default
+              
+            echo "Updated policy with ARN: $POLICY_ARN"
           fi
           
           # Attach policy to role
