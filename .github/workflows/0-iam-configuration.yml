@@ -21,9 +21,13 @@ permissions:
   contents: read
 
 jobs:
-  setup-iam:
-    name: Setup IAM User Permissions
+  # JOB 1: Setup prerequisites and get account info
+  prerequisites:
+    name: Get AWS Account Information
     runs-on: ubuntu-latest
+    outputs:
+      aws_account_id: ${{ steps.get-aws-account.outputs.aws_account_id }}
+      user_exists: ${{ steps.check-user.outputs.user_exists }}
     
     steps:
       - name: Configure AWS credentials
@@ -37,12 +41,43 @@ jobs:
         id: get-aws-account
         run: |
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+          echo "aws_account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "AWS Account ID: $AWS_ACCOUNT_ID"
+      
+      - name: Check if IAM user exists
+        id: check-user
+        run: |
+          USER_EXISTS=$(aws iam get-user --user-name $IAM_USER_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
+          
+          if [ "$USER_EXISTS" = "exists" ]; then
+            echo "IAM user $IAM_USER_NAME already exists"
+            echo "user_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "IAM user $IAM_USER_NAME does not exist"
+            echo "user_exists=false" >> $GITHUB_OUTPUT
+          fi
 
+  # JOB 2: Create Talk2Me Deployment Policy
+  create-deployment-policy:
+    name: Create Talk2Me Deployment Policy
+    needs: prerequisites
+    runs-on: ubuntu-latest
+    outputs:
+      policy_arn: ${{ steps.create-policy.outputs.policy_arn }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
       - name: Create IAM Policy for Talk2Me Deployment
+        id: create-policy
         run: |
           POLICY_NAME="Talk2Me-Deployment-Policy"
-          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
+          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
           
           if [ "$POLICY_EXISTS" != "exists" ]; then
             echo "Creating IAM policy for Talk2Me deployment..."
@@ -91,16 +126,33 @@ jobs:
             
             echo "Created policy with ARN: $POLICY_ARN"
           else
-            POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
+            POLICY_ARN="arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME"
             echo "IAM policy for Talk2Me deployment already exists"
           fi
           
-          echo "POLICY_ARN=$POLICY_ARN" >> $GITHUB_ENV
+          echo "policy_arn=$POLICY_ARN" >> $GITHUB_OUTPUT
+
+  # JOB 3: Create AWS Load Balancer Controller Policy
+  create-alb-policy:
+    name: Create Load Balancer Controller Policy
+    needs: prerequisites
+    runs-on: ubuntu-latest
+    outputs:
+      policy_arn: ${{ steps.create-policy.outputs.policy_arn }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
       
       - name: Create AWS Load Balancer Controller Policy
+        id: create-policy
         run: |
           POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
-          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
+          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
           
           if [ "$POLICY_EXISTS" != "exists" ]; then
             echo "Creating IAM policy for AWS Load Balancer Controller..."
@@ -116,16 +168,33 @@ jobs:
             
             echo "Created ALB policy with ARN: $ALB_POLICY_ARN"
           else
-            ALB_POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
+            ALB_POLICY_ARN="arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME"
             echo "IAM policy for AWS Load Balancer Controller already exists"
           fi
           
-          echo "ALB_POLICY_ARN=$ALB_POLICY_ARN" >> $GITHUB_ENV
+          echo "policy_arn=$ALB_POLICY_ARN" >> $GITHUB_OUTPUT
+
+  # JOB 4: Create External DNS Policy
+  create-dns-policy:
+    name: Create External DNS Policy
+    needs: prerequisites
+    runs-on: ubuntu-latest
+    outputs:
+      policy_arn: ${{ steps.create-policy.outputs.policy_arn }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
       
       - name: Create External DNS Policy
+        id: create-policy
         run: |
           POLICY_NAME="ExternalDNSPolicy"
-          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
+          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
           
           if [ "$POLICY_EXISTS" != "exists" ]; then
             echo "Creating IAM policy for External DNS..."
@@ -164,16 +233,33 @@ jobs:
             
             echo "Created External DNS policy with ARN: $DNS_POLICY_ARN"
           else
-            DNS_POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
+            DNS_POLICY_ARN="arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME"
             echo "IAM policy for External DNS already exists"
           fi
           
-          echo "DNS_POLICY_ARN=$DNS_POLICY_ARN" >> $GITHUB_ENV
+          echo "policy_arn=$DNS_POLICY_ARN" >> $GITHUB_OUTPUT
+
+  # JOB 5: Create Cluster Autoscaler Policy
+  create-autoscaler-policy:
+    name: Create Cluster Autoscaler Policy
+    needs: prerequisites
+    runs-on: ubuntu-latest
+    outputs:
+      policy_arn: ${{ steps.create-policy.outputs.policy_arn }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
       
       - name: Create Cluster Autoscaler Policy
+        id: create-policy
         run: |
           POLICY_NAME="ClusterAutoscalerPolicy"
-          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
+          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
           
           if [ "$POLICY_EXISTS" != "exists" ]; then
             echo "Creating IAM policy for Cluster Autoscaler..."
@@ -206,66 +292,96 @@ jobs:
             
             echo "Created Cluster Autoscaler policy with ARN: $AUTOSCALER_POLICY_ARN"
           else
-            AUTOSCALER_POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
+            AUTOSCALER_POLICY_ARN="arn:aws:iam::${{ needs.prerequisites.outputs.aws_account_id }}:policy/$POLICY_NAME"
             echo "IAM policy for Cluster Autoscaler already exists"
           fi
           
-          echo "AUTOSCALER_POLICY_ARN=$AUTOSCALER_POLICY_ARN" >> $GITHUB_ENV
-      
-      - name: Check if IAM user exists
-        id: check-user
-        run: |
-          USER_EXISTS=$(aws iam get-user --user-name $IAM_USER_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
-          
-          if [ "$USER_EXISTS" = "exists" ]; then
-            echo "IAM user $IAM_USER_NAME already exists"
-            echo "USER_EXISTS=true" >> $GITHUB_ENV
-          else
-            echo "IAM user $IAM_USER_NAME does not exist"
-            echo "USER_EXISTS=false" >> $GITHUB_ENV
-          fi
+          echo "policy_arn=$AUTOSCALER_POLICY_ARN" >> $GITHUB_OUTPUT
+
+  # JOB 6: Attach all policies to IAM user
+  attach-policies:
+    name: Attach Policies to IAM User
+    needs: [
+      prerequisites,
+      create-deployment-policy,
+      create-alb-policy,
+      create-dns-policy,
+      create-autoscaler-policy
+    ]
+    if: needs.prerequisites.outputs.user_exists == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
       
       - name: Attach policies to IAM user
-        if: env.USER_EXISTS == 'true'
         run: |
           echo "Attaching policies to IAM user $IAM_USER_NAME..."
           
           # Attach Talk2Me Deployment Policy
           aws iam attach-user-policy \
             --user-name $IAM_USER_NAME \
-            --policy-arn $POLICY_ARN || echo "Failed to attach Talk2Me Deployment Policy"
+            --policy-arn ${{ needs.create-deployment-policy.outputs.policy_arn }} || echo "Failed to attach Talk2Me Deployment Policy"
           
           # Attach AWS Load Balancer Controller Policy
           aws iam attach-user-policy \
             --user-name $IAM_USER_NAME \
-            --policy-arn $ALB_POLICY_ARN || echo "Failed to attach AWS Load Balancer Controller Policy"
+            --policy-arn ${{ needs.create-alb-policy.outputs.policy_arn }} || echo "Failed to attach AWS Load Balancer Controller Policy"
           
           # Attach External DNS Policy
           aws iam attach-user-policy \
             --user-name $IAM_USER_NAME \
-            --policy-arn $DNS_POLICY_ARN || echo "Failed to attach External DNS Policy"
+            --policy-arn ${{ needs.create-dns-policy.outputs.policy_arn }} || echo "Failed to attach External DNS Policy"
           
           # Attach Cluster Autoscaler Policy
           aws iam attach-user-policy \
             --user-name $IAM_USER_NAME \
-            --policy-arn $AUTOSCALER_POLICY_ARN || echo "Failed to attach Cluster Autoscaler Policy"
+            --policy-arn ${{ needs.create-autoscaler-policy.outputs.policy_arn }} || echo "Failed to attach Cluster Autoscaler Policy"
           
           echo "All policies attached to user $IAM_USER_NAME"
-      
+
+  # JOB 7: Show summary and next steps
+  summary:
+    name: Configuration Summary
+    needs: [
+      prerequisites,
+      create-deployment-policy,
+      create-alb-policy,
+      create-dns-policy,
+      create-autoscaler-policy,
+      attach-policies
+    ]
+    # Run this job even if the attach policies job is skipped (if user doesn't exist)
+    if: always() && !contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    
+    steps:
       - name: Output Configuration
         run: |
           echo "==========================================================="
           echo "AWS IAM Configuration Complete"
           echo "==========================================================="
           echo "Region: $AWS_REGION"
-          echo "Account ID: $AWS_ACCOUNT_ID"
+          echo "Account ID: ${{ needs.prerequisites.outputs.aws_account_id }}"
           echo "User: $IAM_USER_NAME"
           echo ""
-          echo "Policies created and attached:"
+          echo "Policies created:"
           echo "- Talk2Me-Deployment-Policy"
           echo "- AWSLoadBalancerControllerIAMPolicy"
           echo "- ExternalDNSPolicy"
           echo "- ClusterAutoscalerPolicy"
+          echo ""
+          if [ "${{ needs.prerequisites.outputs.user_exists }}" == "true" ]; then
+            echo "All policies were attached to the IAM user $IAM_USER_NAME"
+          else
+            echo "NOTE: IAM user $IAM_USER_NAME does not exist. Policies were created but not attached."
+            echo "You may need to create this user or attach the policies to an existing user manually."
+          fi
           echo ""
           echo "The following GitHub secrets should be set:"
           echo "- AWS_ACCESS_KEY_ID: Your IAM user access key"
