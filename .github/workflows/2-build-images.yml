@@ -133,9 +133,14 @@ jobs:
       
       - name: Create Backend Deployment Template
         run: |
+          # Create directory for Kubernetes manifests
           mkdir -p k8s
           
-          cat << EOF > k8s/backend-deployment.yaml
+          # Set variables for image references
+          BACKEND_IMAGE="${{ needs.build-and-push-images.outputs.aws_account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.BACKEND_ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          
+          # Create backend deployment manifest
+          cat > k8s/backend-deployment.yaml << EOF
           apiVersion: apps/v1
           kind: Deployment
           metadata:
@@ -153,7 +158,7 @@ jobs:
               spec:
                 containers:
                 - name: backend
-                  image: ${needs.build-and-push-images.outputs.aws_account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${BACKEND_ECR_REPOSITORY}:${IMAGE_TAG}
+                  image: $BACKEND_IMAGE
                   ports:
                   - containerPort: 8000
                   env:
@@ -183,7 +188,8 @@ jobs:
                     periodSeconds: 20
           EOF
           
-          cat << EOF > k8s/backend-service.yaml
+          # Create backend service manifest
+          cat > k8s/backend-service.yaml << EOF
           apiVersion: v1
           kind: Service
           metadata:
@@ -200,7 +206,11 @@ jobs:
       
       - name: Create Frontend Deployment Template
         run: |
-          cat << EOF > k8s/frontend-deployment.yaml
+          # Set variables for image references
+          FRONTEND_IMAGE="${{ needs.build-and-push-images.outputs.aws_account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.FRONTEND_ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          
+          # Create frontend deployment manifest
+          cat > k8s/frontend-deployment.yaml << EOF
           apiVersion: apps/v1
           kind: Deployment
           metadata:
@@ -218,7 +228,7 @@ jobs:
               spec:
                 containers:
                 - name: frontend
-                  image: ${needs.build-and-push-images.outputs.aws_account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${FRONTEND_ECR_REPOSITORY}:${IMAGE_TAG}
+                  image: $FRONTEND_IMAGE
                   ports:
                   - containerPort: 80
                   resources:
@@ -230,7 +240,8 @@ jobs:
                       cpu: "300m"
           EOF
           
-          cat << EOF > k8s/frontend-service.yaml
+          # Create frontend service manifest
+          cat > k8s/frontend-service.yaml << EOF
           apiVersion: v1
           kind: Service
           metadata:
@@ -247,7 +258,8 @@ jobs:
       
       - name: Create Ingress Configuration
         run: |
-          cat << EOF > k8s/ingress.yaml
+          # Create ingress manifest with common annotations
+          cat > k8s/ingress.yaml << EOF
           apiVersion: networking.k8s.io/v1
           kind: Ingress
           metadata:
@@ -257,11 +269,11 @@ jobs:
               kubernetes.io/ingress.class: "alb"
               alb.ingress.kubernetes.io/scheme: internet-facing
               alb.ingress.kubernetes.io/target-type: ip
-              alb.ingress.kubernetes.io/load-balancer-name: ${ALB_NAME}
+              alb.ingress.kubernetes.io/load-balancer-name: ${{ env.ALB_NAME }}
               alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
               alb.ingress.kubernetes.io/ssl-redirect: '443'
               alb.ingress.kubernetes.io/ssl-policy: "ELBSecurityPolicy-TLS-1-2-2017-01"
-              external-dns.alpha.kubernetes.io/hostname: "${DOMAIN_NAME},${API_DOMAIN_NAME}"
+              external-dns.alpha.kubernetes.io/hostname: "${{ env.DOMAIN_NAME }},${{ env.API_DOMAIN_NAME }}"
               alb.ingress.kubernetes.io/group.name: talk2me
           EOF
           
@@ -270,11 +282,11 @@ jobs:
             echo "    alb.ingress.kubernetes.io/certificate-arn: ${CERTIFICATE_ARN}" >> k8s/ingress.yaml
           fi
           
-          # Add rules
-          cat << EOF >> k8s/ingress.yaml
+          # Add rules to ingress
+          cat >> k8s/ingress.yaml << EOF
           spec:
             rules:
-            - host: ${DOMAIN_NAME}
+            - host: ${{ env.DOMAIN_NAME }}
               http:
                 paths:
                 - path: /
@@ -284,7 +296,7 @@ jobs:
                       name: talk2me-frontend
                       port:
                         number: 80
-            - host: ${API_DOMAIN_NAME}
+            - host: ${{ env.API_DOMAIN_NAME }}
               http:
                 paths:
                 - path: /
@@ -364,7 +376,7 @@ jobs:
             echo "Warning: Load balancer address not available after several attempts"
             
             # Try to find the ALB directly in AWS
-            AWS_ALB_DNS=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
+            AWS_ALB_DNS=$(aws elbv2 describe-load-balancers --names ${{ env.ALB_NAME }} --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "")
             
             if [ -n "$AWS_ALB_DNS" ] && [ "$AWS_ALB_DNS" != "None" ]; then
               echo "Found ALB in AWS: $AWS_ALB_DNS"
@@ -405,7 +417,7 @@ jobs:
           echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
           
           # Get the ALB hosted zone ID
-          ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers --names $ALB_NAME --query 'LoadBalancers[0].CanonicalHostedZoneId' --output text 2>/dev/null || echo "Z35SXDOTRQ7X7K")
+          ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers --names ${{ env.ALB_NAME }} --query 'LoadBalancers[0].CanonicalHostedZoneId' --output text 2>/dev/null || echo "Z35SXDOTRQ7X7K")
           
           # If we couldn't get the hosted zone ID, use the default for us-east-1
           if [ -z "$ALB_HOSTED_ZONE_ID" ] || [ "$ALB_HOSTED_ZONE_ID" == "None" ]; then
@@ -419,7 +431,7 @@ jobs:
               {
                 "Action": "UPSERT",
                 "ResourceRecordSet": {
-                  "Name": "$DOMAIN_NAME",
+                  "Name": "${{ env.DOMAIN_NAME }}",
                   "Type": "A",
                   "AliasTarget": {
                     "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
@@ -431,7 +443,7 @@ jobs:
               {
                 "Action": "UPSERT",
                 "ResourceRecordSet": {
-                  "Name": "$API_DOMAIN_NAME",
+                  "Name": "${{ env.API_DOMAIN_NAME }}",
                   "Type": "A",
                   "AliasTarget": {
                     "HostedZoneId": "$ALB_HOSTED_ZONE_ID",
@@ -449,7 +461,7 @@ jobs:
             --hosted-zone-id $ZONE_ID \
             --change-batch file://dns-changes.json
           
-          echo "DNS records have been configured for $DOMAIN_NAME and $API_DOMAIN_NAME"
+          echo "DNS records have been configured for ${{ env.DOMAIN_NAME }} and ${{ env.API_DOMAIN_NAME }}"
           echo "DNS changes take time to propagate. Please allow 5-10 minutes."
       
       - name: Deployment Summary
@@ -479,8 +491,8 @@ jobs:
           echo "Access Information:"
           if [ -n "$LB_ADDRESS" ]; then
             echo "Load Balancer Address: $LB_ADDRESS"
-            echo "Frontend URL: https://$DOMAIN_NAME"
-            echo "Backend API URL: https://$API_DOMAIN_NAME"
+            echo "Frontend URL: https://${{ env.DOMAIN_NAME }}"
+            echo "Backend API URL: https://${{ env.API_DOMAIN_NAME }}"
           else
             echo "Load Balancer Address: Not available"
             echo "Please check AWS Console for more information."
