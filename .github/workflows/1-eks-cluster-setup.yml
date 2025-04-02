@@ -1,70 +1,4 @@
-# JOB 10: Verify Cluster Status
-verify-cluster:
-  name: Verify Cluster Status
-  needs: [
-    setup-kubeconfig, 
-    update-addons, 
-    install-load-balancer, 
-    setup-external-dns, 
-    create-namespace-and-secret
-  ]
-  # Also wait for autoscaler if it was requested
-  if: always() && (needs.setup-kubeconfig.result == 'success')
-  runs-on: ubuntu-latest
-  
-  steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-        
-    - name: Setup kubectl
-      run: |
-        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-        
-    - name: Verify Cluster Status and Components
-      run: |
-        echo "===== EKS Cluster Setup Complete ====="
-        echo "Cluster name: $CLUSTER_NAME"
-        echo "Region: $AWS_REGION"
-        
-        echo "Verifying cluster components..."
-        
-        # Verify cluster nodes
-        echo "Checking cluster nodes:"
-        kubectl get nodes
-        
-        # Verify AWS Load Balancer Controller
-        echo "Checking AWS Load Balancer Controller:"
-        kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-        
-        # Verify External DNS
-        echo "Checking External DNS:"
-        kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
-        
-        # Verify EKS add-ons
-        echo "Checking EKS add-ons:"
-        aws eks list-addons --cluster-name $CLUSTER_NAME --region $AWS_REGION
-        
-        # Check for any pods not running
-        echo "Checking for problematic pods:"
-        NOT_RUNNING=$(kubectl get pods --all-namespaces -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.namespace + "/" + .metadata.name')
-        if [ -n "$NOT_RUNNING" ]; then
-          echo "WARNING: Found pods not in Running/Succeeded state:"
-          echo "$NOT_RUNNING"
-        else
-          echo "All pods are running properly."
-        fi
-        
-        # Output important information for next steps
-        echo ""
-        echo "===== Next Steps ====="
-        echo "1. Run the Build and Deploy workflow to build and deploy your application"
-        echo "2. After deploying, verify the application is working properly"
-        echo ""
-        echo "Your EKS cluster is now ready for application deployment!"name: 1. EKS Cluster Setup
+name: 1. EKS Cluster Setup
 
 on:
 workflow_dispatch:
@@ -770,3 +704,70 @@ configure-autoscaler:
           kubectl logs -n kube-system -l app.kubernetes.io/name=cluster-autoscaler --tail=50
           echo "Continuing workflow despite timeout - manual verification required later"
         }
+ # JOB 10: Verify Cluster Status
+ verify-cluster:
+  name: Verify Cluster Status
+  needs: [
+    setup-kubeconfig, 
+    update-addons, 
+    install-load-balancer, 
+    setup-external-dns, 
+    create-namespace-and-secret
+  ]
+  # Also wait for autoscaler if it was requested
+  if: always() && (needs.setup-kubeconfig.result == 'success')
+  runs-on: ubuntu-latest
+  
+  steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Setup kubectl
+      run: |
+        aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+        
+    - name: Verify Cluster Status and Components
+      run: |
+        echo "===== EKS Cluster Setup Complete ====="
+        echo "Cluster name: $CLUSTER_NAME"
+        echo "Region: $AWS_REGION"
+        
+        echo "Verifying cluster components..."
+        
+        # Verify cluster nodes
+        echo "Checking cluster nodes:"
+        kubectl get nodes
+        
+        # Verify AWS Load Balancer Controller
+        echo "Checking AWS Load Balancer Controller:"
+        kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+        
+        # Verify External DNS
+        echo "Checking External DNS:"
+        kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
+        
+        # Verify EKS add-ons
+        echo "Checking EKS add-ons:"
+        aws eks list-addons --cluster-name $CLUSTER_NAME --region $AWS_REGION
+        
+        # Check for any pods not running
+        echo "Checking for problematic pods:"
+        NOT_RUNNING=$(kubectl get pods --all-namespaces -o json | jq -r '.items[] | select(.status.phase != "Running" and .status.phase != "Succeeded") | .metadata.namespace + "/" + .metadata.name')
+        if [ -n "$NOT_RUNNING" ]; then
+          echo "WARNING: Found pods not in Running/Succeeded state:"
+          echo "$NOT_RUNNING"
+        else
+          echo "All pods are running properly."
+        fi
+        
+        # Output important information for next steps
+        echo ""
+        echo "===== Next Steps ====="
+        echo "1. Run the Build and Deploy workflow to build and deploy your application"
+        echo "2. After deploying, verify the application is working properly"
+        echo ""
+        echo "Your EKS cluster is now ready for application deployment!"name: 1. EKS Cluster Setup
