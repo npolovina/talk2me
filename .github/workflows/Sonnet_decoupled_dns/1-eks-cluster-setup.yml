@@ -1,0 +1,719 @@
+name: 1. EKS Cluster Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      node_group_size:
+        description: 'Node Group Size (min,desired,max)'
+        required: true
+        default: '2,3,4'
+      node_instance_type:
+        description: 'EC2 Instance Type for Nodes'
+        required: true
+        default: 't3.medium'
+      kubernetes_version:
+        description: 'Kubernetes Version'
+        required: true
+        default: '1.28'
+      domain_name:
+        description: 'Domain Name for the application'
+        required: true
+        default: 'talk2me-gen-z.com'
+      enable_autoscaler:
+        description: 'Enable Cluster Autoscaler'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  DOMAIN_NAME: ${{ github.event.inputs.domain_name }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  eks-setup:
+    name: Create EKS Cluster and Configure Add-ons
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get AWS Account ID
+        id: get-aws-account
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+      
+      - name: Install eksctl
+        run: |
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+          sudo mv /tmp/eksctl /usr/local/bin
+          eksctl version
+      
+      - name: Check if EKS Cluster Exists
+        id: check-cluster
+        run: |
+          echo "Checking if cluster $CLUSTER_NAME already exists..."
+          
+          if aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION &> /dev/null; then
+            echo "Cluster $CLUSTER_NAME already exists"
+            echo "CLUSTER_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "Cluster $CLUSTER_NAME does not exist yet"
+            echo "CLUSTER_EXISTS=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Create EKS cluster if it doesn't exist
+        if: env.CLUSTER_EXISTS == 'false'
+        run: |
+          # Parse node group size parameters
+          IFS=',' read -ra SIZES <<< "${{ github.event.inputs.node_group_size }}"
+          MIN_SIZE=${SIZES[0]}
+          DESIRED_SIZE=${SIZES[1]}
+          MAX_SIZE=${SIZES[2]}
+          
+          echo "Creating EKS cluster $CLUSTER_NAME in $AWS_REGION..."
+          eksctl create cluster \
+            --name $CLUSTER_NAME \
+            --region $AWS_REGION \
+            --version ${{ github.event.inputs.kubernetes_version }} \
+            --nodegroup-name standard-nodes \
+            --node-type ${{ github.event.inputs.node_instance_type }} \
+            --nodes-min $MIN_SIZE \
+            --nodes $DESIRED_SIZE \
+            --nodes-max $MAX_SIZE \
+            --with-oidc \
+            --managed \
+            --asg-access
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Update EKS add-ons
+        run: |
+          echo "Updating all EKS add-ons to compatible versions..."
+          
+          # Define the add-ons to ensure are properly configured
+          ADDONS=("coredns" "kube-proxy" "vpc-cni" "aws-ebs-csi-driver")
+          
+          for ADDON in "${ADDONS[@]}"; do
+            echo "Processing add-on: $ADDON"
+            
+            # Get latest compatible version for the add-on
+            LATEST_VERSION=$(aws eks describe-addon-versions \
+              --addon-name $ADDON \
+              --kubernetes-version ${{ github.event.inputs.kubernetes_version }} \
+              --query "addons[].addonVersions[0].addonVersion" \
+              --output text)
+              
+            if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "None" ]; then
+              echo "No version found for $ADDON, skipping..."
+              continue
+            fi
+            
+            echo "Latest compatible $ADDON version: $LATEST_VERSION"
+            
+            # Check if add-on is already installed
+            ADDON_STATUS=$(aws eks describe-addon \
+              --cluster-name $CLUSTER_NAME \
+              --addon-name $ADDON \
+              --query "addon.status" \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+            
+            if [ "$ADDON_STATUS" == "NOT_FOUND" ]; then
+              echo "Creating $ADDON add-on with version $LATEST_VERSION"
+              aws eks create-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name $ADDON \
+                --addon-version $LATEST_VERSION
+            else
+              echo "Updating $ADDON add-on to version $LATEST_VERSION"
+              aws eks update-addon \
+                --cluster-name $CLUSTER_NAME \
+                --addon-name $ADDON \
+                --addon-version $LATEST_VERSION \
+                --resolve-conflicts PRESERVE
+            fi
+          done
+          
+          echo "All add-ons have been configured"
+      
+      - name: Tag subnets for Load Balancer Controller
+        run: |
+          echo "Tagging subnets for AWS Load Balancer Controller..."
+          
+          # Get VPC ID used by the EKS cluster
+          VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --query "cluster.resourcesVpcConfig.vpcId" --output text)
+          echo "EKS Cluster VPC ID: $VPC_ID"
+          
+          # Get all subnets in the VPC
+          SUBNET_IDS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query "Subnets[].SubnetId" --output text)
+          
+          # Identify public subnets (those with route to internet gateway)
+          for SUBNET_ID in $SUBNET_IDS; do
+            # Check if this subnet's route table has an internet gateway route
+            RT_ID=$(aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$SUBNET_ID" --query "RouteTables[0].RouteTableId" --output text)
+            
+            if [ -z "$RT_ID" ] || [ "$RT_ID" == "None" ]; then
+              # If there's no explicit association, get the main route table for the VPC
+              RT_ID=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" "Name=association.main,Values=true" --query "RouteTables[0].RouteTableId" --output text)
+            fi
+            
+            # Check if this route table has an internet gateway route
+            IGW_ROUTE=$(aws ec2 describe-route-tables --route-table-ids $RT_ID --query "RouteTables[0].Routes[?GatewayId!=null] | [?starts_with(GatewayId, 'igw-')].DestinationCidrBlock" --output text)
+            
+            if [ -n "$IGW_ROUTE" ]; then
+              # This subnet has a route to an internet gateway - it's public
+              echo "Tagging public subnet $SUBNET_ID with kubernetes.io/role/elb=1"
+              aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/elb,Value=1
+            else
+              # This subnet doesn't have a route to an internet gateway - it's private
+              echo "Tagging private subnet $SUBNET_ID with kubernetes.io/role/internal-elb=1"
+              aws ec2 create-tags --resources $SUBNET_ID --tags Key=kubernetes.io/role/internal-elb,Value=1
+            fi
+          done
+      
+      - name: Create ECR Repositories
+        run: |
+          # Create Backend ECR Repository if it doesn't exist
+          aws ecr describe-repositories --repository-names talk2me-backend || \
+          aws ecr create-repository --repository-name talk2me-backend
+          
+          # Create Frontend ECR Repository if it doesn't exist
+          aws ecr describe-repositories --repository-names talk2me-frontend || \
+          aws ecr create-repository --repository-name talk2me-frontend
+          
+          echo "ECR repositories created or verified"
+            
+      - name: Install AWS Load Balancer Controller
+        run: |
+          # Create enhanced IAM policy for AWS Load Balancer Controller with required permissions
+          cat > alb_controller_policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "iam:CreateServiceLinkedRole",
+                  "ec2:DescribeAccountAttributes",
+                  "ec2:DescribeAddresses",
+                  "ec2:DescribeAvailabilityZones",
+                  "ec2:DescribeInternetGateways",
+                  "ec2:DescribeVpcs",
+                  "ec2:DescribeSubnets",
+                  "ec2:DescribeSecurityGroups",
+                  "ec2:DescribeInstances",
+                  "ec2:DescribeNetworkInterfaces",
+                  "ec2:DescribeTags",
+                  "ec2:GetCoipPoolUsage",
+                  "ec2:DescribeCoipPools",
+                  "elasticloadbalancing:DescribeLoadBalancers",
+                  "elasticloadbalancing:DescribeLoadBalancerAttributes",
+                  "elasticloadbalancing:DescribeListeners",
+                  "elasticloadbalancing:DescribeListenerCertificates",
+                  "elasticloadbalancing:DescribeListenerAttributes",
+                  "elasticloadbalancing:DescribeSSLPolicies",
+                  "elasticloadbalancing:DescribeRules",
+                  "elasticloadbalancing:DescribeTargetGroups",
+                  "elasticloadbalancing:DescribeTargetGroupAttributes",
+                  "elasticloadbalancing:DescribeTargetHealth",
+                  "elasticloadbalancing:DescribeTags"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "cognito-idp:DescribeUserPoolClient",
+                  "acm:ListCertificates",
+                  "acm:DescribeCertificate",
+                  "iam:ListServerCertificates",
+                  "iam:GetServerCertificate",
+                  "waf-regional:GetWebACL",
+                  "waf-regional:GetWebACLForResource",
+                  "waf-regional:AssociateWebACL",
+                  "waf-regional:DisassociateWebACL",
+                  "wafv2:GetWebACL",
+                  "wafv2:GetWebACLForResource",
+                  "wafv2:AssociateWebACL",
+                  "wafv2:DisassociateWebACL",
+                  "shield:GetSubscriptionState",
+                  "shield:DescribeProtection",
+                  "shield:CreateProtection",
+                  "shield:DeleteProtection"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ec2:AuthorizeSecurityGroupIngress",
+                  "ec2:RevokeSecurityGroupIngress"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ec2:CreateSecurityGroup"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ec2:CreateTags"
+                ],
+                "Resource": "arn:aws:ec2:*:*:security-group/*",
+                "Condition": {
+                  "StringEquals": {
+                    "ec2:CreateAction": "CreateSecurityGroup"
+                  },
+                  "Null": {
+                    "aws:RequestTag/elbv2.k8s.aws/cluster": "false"
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ec2:CreateTags",
+                  "ec2:DeleteTags"
+                ],
+                "Resource": "arn:aws:ec2:*:*:security-group/*",
+                "Condition": {
+                  "Null": {
+                    "aws:RequestTag/elbv2.k8s.aws/cluster": "true",
+                    "aws:ResourceTag/elbv2.k8s.aws/cluster": "false"
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "ec2:AuthorizeSecurityGroupIngress",
+                  "ec2:RevokeSecurityGroupIngress",
+                  "ec2:DeleteSecurityGroup"
+                ],
+                "Resource": "*",
+                "Condition": {
+                  "Null": {
+                    "aws:ResourceTag/elbv2.k8s.aws/cluster": "false"
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "elasticloadbalancing:CreateLoadBalancer",
+                  "elasticloadbalancing:CreateTargetGroup"
+                ],
+                "Resource": "*",
+                "Condition": {
+                  "Null": {
+                    "aws:RequestTag/elbv2.k8s.aws/cluster": "false"
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "elasticloadbalancing:CreateListener",
+                  "elasticloadbalancing:DeleteListener",
+                  "elasticloadbalancing:CreateRule",
+                  "elasticloadbalancing:DeleteRule"
+                ],
+                "Resource": "*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "elasticloadbalancing:AddTags",
+                  "elasticloadbalancing:RemoveTags"
+                ],
+                "Resource": [
+                  "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*",
+                  "arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*",
+                  "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*"
+                ],
+                "Condition": {
+                  "Null": {
+                    "aws:RequestTag/elbv2.k8s.aws/cluster": "true",
+                    "aws:ResourceTag/elbv2.k8s.aws/cluster": "false"
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "elasticloadbalancing:AddTags",
+                  "elasticloadbalancing:RemoveTags"
+                ],
+                "Resource": [
+                  "arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*",
+                  "arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*",
+                  "arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*",
+                  "arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "elasticloadbalancing:ModifyLoadBalancerAttributes",
+                  "elasticloadbalancing:SetIpAddressType",
+                  "elasticloadbalancing:SetSecurityGroups",
+                  "elasticloadbalancing:SetSubnets",
+                  "elasticloadbalancing:DeleteLoadBalancer",
+                  "elasticloadbalancing:ModifyTargetGroup",
+                  "elasticloadbalancing:ModifyTargetGroupAttributes",
+                  "elasticloadbalancing:DeleteTargetGroup",
+                  "elasticloadbalancing:ModifyListener",
+                  "elasticloadbalancing:ModifyListenerAttributes"
+                ],
+                "Resource": "*",
+                "Condition": {
+                  "Null": {
+                    "aws:ResourceTag/elbv2.k8s.aws/cluster": "false"
+                  }
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "elasticloadbalancing:RegisterTargets",
+                  "elasticloadbalancing:DeregisterTargets"
+                ],
+                "Resource": "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*"
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "elasticloadbalancing:SetWebAcl",
+                  "elasticloadbalancing:ModifyListener",
+                  "elasticloadbalancing:AddListenerCertificates",
+                  "elasticloadbalancing:RemoveListenerCertificates",
+                  "elasticloadbalancing:ModifyRule"
+                ],
+                "Resource": "*"
+              }
+            ]
+          }
+          EOF
+          
+          # Create the policy with enhanced permissions
+          POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+          POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
+          
+          # Check if policy already exists
+          if aws iam get-policy --policy-arn $POLICY_ARN 2>/dev/null; then
+            echo "Policy already exists, creating new version with updated permissions..."
+            # Create new policy version with updated permissions
+            aws iam create-policy-version \
+              --policy-arn $POLICY_ARN \
+              --policy-document file://alb_controller_policy.json \
+              --set-as-default
+          else
+            echo "Creating new ALB controller policy with enhanced permissions..."
+            # Create new policy with updated permissions
+            aws iam create-policy \
+              --policy-name $POLICY_NAME \
+              --policy-document file://alb_controller_policy.json
+          fi
+
+          # Create Service Account with the updated policy
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=aws-load-balancer-controller \
+            --attach-policy-arn=arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME \
+            --override-existing-serviceaccounts \
+            --approve
+          
+          # Install Helm
+          curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          
+          # Add Helm repository
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          
+          # Install AWS Load Balancer Controller
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --set clusterName=$CLUSTER_NAME \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=$AWS_REGION \
+            -n kube-system || \
+          helm upgrade aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --set clusterName=$CLUSTER_NAME \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=$AWS_REGION \
+            -n kube-system
+          
+          # Wait for controller to be ready
+          echo "Waiting for AWS Load Balancer Controller to be ready..."
+          kubectl rollout status deployment aws-load-balancer-controller -n kube-system --timeout=180s
+      
+      - name: Setup External DNS (for Route53)
+        run: |
+          # Create IAM policy for External DNS
+          cat > external-dns-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "route53:ChangeResourceRecordSets"
+                ],
+                "Resource": [
+                  "arn:aws:route53:::hostedzone/*"
+                ]
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "route53:ListHostedZones",
+                  "route53:ListResourceRecordSets"
+                ],
+                "Resource": [
+                  "*"
+                ]
+              }
+            ]
+          }
+          EOF
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name ExternalDNSPolicy \
+            --policy-document file://external-dns-policy.json || echo "Policy may already exist - continuing"
+          
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=external-dns \
+            --attach-policy-arn=arn:aws:iam::$AWS_ACCOUNT_ID:policy/ExternalDNSPolicy \
+            --override-existing-serviceaccounts \
+            --approve
+            
+          # Install External DNS
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo update
+          
+          helm install external-dns bitnami/external-dns \
+            --set provider=aws \
+            --set aws.region=$AWS_REGION \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=external-dns \
+            --namespace kube-system || \
+          helm upgrade external-dns bitnami/external-dns \
+            --set provider=aws \
+            --set aws.region=$AWS_REGION \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=external-dns \
+            --namespace kube-system
+      
+      - name: Check for Route53 Hosted Zone
+        id: check-hosted-zone
+        run: |
+          echo "Checking if Route53 hosted zone exists for $DOMAIN_NAME..."
+          
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name $DOMAIN_NAME --query "HostedZones[?Name=='$DOMAIN_NAME.'].Id" --output text | cut -d/ -f3)
+          
+          if [ -n "$ZONE_ID" ]; then
+            echo "Hosted zone exists with ID: $ZONE_ID"
+            echo "ZONE_ID=$ZONE_ID" >> $GITHUB_ENV
+            echo "HOSTED_ZONE_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "Hosted zone does not exist, will create it in deployment workflow"
+            echo "HOSTED_ZONE_EXISTS=false" >> $GITHUB_ENV
+          fi
+      
+      - name: Create ACM Certificate if needed
+        id: check-certificate
+        run: |
+          echo "Checking for ACM certificate for $DOMAIN_NAME..."
+          
+          # Try to find certificate for domain in ACM
+          CERT_ARN=$(aws acm list-certificates --query "CertificateSummaryList[?contains(DomainName, '*.${DOMAIN_NAME}') || DomainName=='${DOMAIN_NAME}'].CertificateArn" --output text | head -1)
+          
+          if [ -n "$CERT_ARN" ]; then
+            echo "Found certificate: $CERT_ARN"
+            echo "CERTIFICATE_ARN=$CERT_ARN" >> $GITHUB_ENV
+          else
+            echo "No certificate found for $DOMAIN_NAME, creating wildcard certificate..."
+            
+            # Create new certificate with wildcard and apex domain
+            NEW_CERT_ARN=$(aws acm request-certificate \
+              --domain-name "$DOMAIN_NAME" \
+              --validation-method DNS \
+              --subject-alternative-names "*.$DOMAIN_NAME" \
+              --query CertificateArn --output text)
+            
+            echo "Created new certificate: $NEW_CERT_ARN"
+            echo "CERTIFICATE_ARN=$NEW_CERT_ARN" >> $GITHUB_ENV
+            
+            # If hosted zone exists, add validation records
+            if [ "$HOSTED_ZONE_EXISTS" == "true" ]; then
+              echo "Adding DNS validation records to Route53..."
+              
+              # Wait a moment for the certificate to be ready
+              sleep 5
+              
+              # Get validation records
+              VALIDATION_RECORDS=$(aws acm describe-certificate \
+                --certificate-arn $NEW_CERT_ARN \
+                --query "Certificate.DomainValidationOptions[].ResourceRecord" \
+                --output json)
+              
+              # Create validation records in Route53
+              echo $VALIDATION_RECORDS | jq -c '.[]' | while read -r record; do
+                NAME=$(echo $record | jq -r '.Name')
+                VALUE=$(echo $record | jq -r '.Value')
+                TYPE=$(echo $record | jq -r '.Type')
+                
+                echo "Adding validation record: $NAME -> $VALUE"
+                
+                aws route53 change-resource-record-sets \
+                  --hosted-zone-id $ZONE_ID \
+                  --change-batch '{
+                    "Changes": [{
+                      "Action": "UPSERT",
+                      "ResourceRecordSet": {
+                        "Name": "'$NAME'",
+                        "Type": "'$TYPE'",
+                        "TTL": 300,
+                        "ResourceRecords": [{"Value": "'$VALUE'"}]
+                      }
+                    }]
+                  }'
+              done
+              
+              echo "DNS validation records added. Certificate validation will take some time to complete."
+            else
+              echo "No hosted zone exists yet. DNS validation records will need to be added later."
+            fi
+          fi
+      
+      - name: Create Kubernetes Namespace for Talk2Me
+        run: |
+          # Create namespace if it doesn't exist
+          kubectl create namespace talk2me --dry-run=client -o yaml | kubectl apply -f -
+          
+      - name: Create Secret for DeepSeek API Key
+        run: |
+          kubectl create secret generic talk2me-secrets \
+            --namespace talk2me \
+            --from-literal=deepseek-api-key=${{ secrets.DEEPSEEK_API_KEY }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+            
+      - name: Configure Cluster Autoscaler (when requested)
+        if: ${{ github.event.inputs.enable_autoscaler == 'true' }}
+        run: |
+          echo "Setting up Cluster Autoscaler..."
+          
+          # Create IAM policy for Cluster Autoscaler
+          cat > cluster-autoscaler-policy.json << EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "autoscaling:DescribeAutoScalingGroups",
+                  "autoscaling:DescribeAutoScalingInstances",
+                  "autoscaling:DescribeLaunchConfigurations",
+                  "autoscaling:DescribeTags",
+                  "autoscaling:SetDesiredCapacity",
+                  "autoscaling:TerminateInstanceInAutoScalingGroup",
+                  "ec2:DescribeLaunchTemplateVersions"
+                ],
+                "Resource": ["*"]
+              }
+            ]
+          }
+          EOF
+          
+          # Create the policy
+          aws iam create-policy \
+            --policy-name ClusterAutoscalerPolicy \
+            --policy-document file://cluster-autoscaler-policy.json || echo "Policy may already exist - continuing"
+          
+          # Create Service Account
+          eksctl create iamserviceaccount \
+            --cluster=$CLUSTER_NAME \
+            --namespace=kube-system \
+            --name=cluster-autoscaler \
+            --attach-policy-arn=arn:aws:iam::$AWS_ACCOUNT_ID:policy/ClusterAutoscalerPolicy \
+            --override-existing-serviceaccounts \
+            --approve
+            
+          # Install Cluster Autoscaler
+          helm repo add autoscaler https://kubernetes.github.io/autoscaler
+          helm repo update
+          
+          helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+            --set autoDiscovery.clusterName=$CLUSTER_NAME \
+            --set awsRegion=$AWS_REGION \
+            --set rbac.serviceAccount.create=false \
+            --set rbac.serviceAccount.name=cluster-autoscaler \
+            --namespace kube-system || \
+          helm upgrade cluster-autoscaler autoscaler/cluster-autoscaler \
+            --set autoDiscovery.clusterName=$CLUSTER_NAME \
+            --set awsRegion=$AWS_REGION \
+            --set rbac.serviceAccount.create=false \
+            --set rbac.serviceAccount.name=cluster-autoscaler \
+            --namespace kube-system
+      
+      - name: Verify Cluster Status and Components
+        run: |
+          echo "===== EKS Cluster Setup Complete ====="
+          echo "Cluster name: $CLUSTER_NAME"
+          echo "Region: $AWS_REGION"
+          echo "Domain: $DOMAIN_NAME"
+          
+          echo "Verifying cluster components..."
+          
+          # Verify AWS Load Balancer Controller
+          echo "Checking AWS Load Balancer Controller:"
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          # Verify External DNS
+          echo "Checking External DNS:"
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=external-dns
+          
+          # Verify EKS add-ons
+          echo "Checking EKS add-ons:"
+          aws eks list-addons --cluster-name $CLUSTER_NAME --region $AWS_REGION
+          
+          # Output important information for next steps
+          echo ""
+          echo "===== Next Steps ====="
+          echo "1. Run the Build and Deploy workflow to build and deploy your application"
+          echo "2. After deploying, verify the application is working properly"
+          echo "3. If needed, run the DNS Configuration workflow to finalize DNS settings"
+          echo ""
+          echo "Your EKS cluster is now ready for application deployment!"

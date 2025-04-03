@@ -1,0 +1,151 @@
+name: 0. IAM Configuration
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  GITHUB_OIDC_PROVIDER_URL: "token.actions.githubusercontent.com"
+  GITHUB_OIDC_AUDIENCE: "sts.amazonaws.com"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  setup-iam:
+    name: Setup IAM OIDC and Roles
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get AWS Account ID
+        id: get-aws-account
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+
+      - name: Create IAM OIDC Provider
+        run: |
+          OIDC_PROVIDER_EXISTS=$(aws iam list-open-id-connect-providers | grep $GITHUB_OIDC_PROVIDER_URL || echo "")
+          
+          if [ -z "$OIDC_PROVIDER_EXISTS" ]; then
+            echo "Creating OIDC Provider for GitHub Actions..."
+            
+            aws iam create-open-id-connect-provider \
+              --url https://$GITHUB_OIDC_PROVIDER_URL \
+              --client-id-list $GITHUB_OIDC_AUDIENCE \
+              --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea1"
+          else
+            echo "OIDC Provider for GitHub Actions already exists"
+          fi
+          
+          OIDC_PROVIDER_ARN=$(aws iam list-open-id-connect-providers | jq -r '.OpenIDConnectProviderList[] | select(.Arn | contains("'$GITHUB_OIDC_PROVIDER_URL'")) | .N')
+          echo "OIDC_PROVIDER_ARN=$OIDC_PROVIDER_ARN" >> $GITHUB_ENV
+
+      - name: Create GitHub Actions IAM Role
+        run: |
+          ROLE_NAME="GitHub-Actions-Talk2Me-Role"
+          ROLE_EXISTS=$(aws iam get-role --role-name $ROLE_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
+          
+          if [ "$ROLE_EXISTS" != "exists" ]; then
+            echo "Creating IAM role for GitHub Actions..."
+            
+            # Write the trust policy
+            echo '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "'"$OIDC_PROVIDER_ARN"'"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+                    },
+                    "StringLike": {
+                      "token.actions.githubusercontent.com:sub": "repo:${{ github.repository }}:*"
+                    }
+                  }
+                }
+              ]
+            }' > trust-policy.json
+            
+            aws iam create-role \
+              --role-name $ROLE_NAME \
+              --assume-role-policy-document file://trust-policy.json \
+              --description "Role for GitHub Actions to deploy Talk2Me application"
+          else
+            echo "IAM role for GitHub Actions already exists"
+          fi
+
+      - name: Create IAM Policy for Talk2Me Deployment
+        run: |
+          POLICY_NAME="Talk2Me-Deployment-Policy"
+          POLICY_EXISTS=$(aws iam get-policy --policy-arn arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME 2>&1 | grep "NoSuchEntity" || echo "exists")
+          
+          if [ "$POLICY_EXISTS" != "exists" ]; then
+            echo "Creating IAM policy for Talk2Me deployment..."
+            
+            # Comprehensive policy for EKS, ECR, and related services
+            echo '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "eks:*",
+                    "ec2:*",
+                    "ecr:*",
+                    "iam:*",
+                    "route53:*",
+                    "autoscaling:*",
+                    "elasticloadbalancing:*",
+                    "cloudformation:*",
+                    "acm:*",
+                    "logs:*",
+                    "s3:*"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }' > policy.json
+            
+            POLICY_ARN=$(aws iam create-policy \
+              --policy-name $POLICY_NAME \
+              --policy-document file://policy.json \
+              --query 'Policy.Arn' --output text)
+          else
+            POLICY_ARN="arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME"
+          fi
+          
+          # Attach policy to role
+          aws iam attach-role-policy \
+            --role-name GitHub-Actions-Talk2Me-Role \
+            --policy-arn $POLICY_ARN
+
+      - name: Output Configuration
+        run: |
+          echo "==========================================================="
+          echo "AWS IAM Configuration Complete"
+          echo "==========================================================="
+          echo "Region: $AWS_REGION"
+          echo "Account ID: $AWS_ACCOUNT_ID"
+          echo "GitHub Actions Role ARN: arn:aws:iam::$AWS_ACCOUNT_ID:role/GitHub-Actions-Talk2Me-Role"
+          echo "============================================================"

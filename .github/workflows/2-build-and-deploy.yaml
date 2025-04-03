@@ -1,0 +1,308 @@
+name: 2. Build and Deploy Application
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'talk2me-cluster'
+      image_tag:
+        description: 'Docker Image Tag'
+        required: true
+        default: 'latest'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.region }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name }}
+  IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+  BACKEND_ECR_REPOSITORY: talk2me-backend
+  FRONTEND_ECR_REPOSITORY: talk2me-frontend
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push-images:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    
+    outputs:
+      backend_image: ${{ steps.build-backend.outputs.image }}
+      frontend_image: ${{ steps.build-frontend.outputs.image }}
+      aws_account_id: ${{ steps.get-aws-account.outputs.account_id }}
+      sha_tag: ${{ steps.sha-tag.outputs.sha_short }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Get AWS Account ID
+        id: get-aws-account
+        run: |
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+          echo "account_id=$AWS_ACCOUNT_ID" >> $GITHUB_OUTPUT
+      
+      - name: Generate short SHA for tag
+        id: sha-tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "Creating image tag with: $SHORT_SHA"
+          echo "sha_short=$SHORT_SHA" >> $GITHUB_OUTPUT
+          
+          # Create a combined tag with user input and SHA
+          if [ "$IMAGE_TAG" == "latest" ]; then
+            # If user specified "latest", just use the SHA
+            COMBINED_TAG="$SHORT_SHA"
+          else
+            # Otherwise combine user tag and SHA
+            COMBINED_TAG="${IMAGE_TAG}-${SHORT_SHA}"
+          fi
+          
+          echo "COMBINED_TAG=$COMBINED_TAG" >> $GITHUB_ENV
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Build and Push Backend Image
+        id: build-backend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          # Find the backend Dockerfile
+          BACKEND_DOCKERFILE=$(find . -type f -name "Dockerfile" -path "*/backend/*" | head -1)
+          
+          if [ -z "$BACKEND_DOCKERFILE" ]; then
+            echo "Error: Could not find a Dockerfile in the backend directory"
+            exit 1
+          fi
+          
+          BACKEND_DIR=$(dirname "$BACKEND_DOCKERFILE")
+          echo "Found backend Dockerfile at: $BACKEND_DOCKERFILE"
+          echo "Building from directory: $BACKEND_DIR"
+          
+          # Build and push backend image
+          docker build "$BACKEND_DIR" \
+            -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG
+          
+          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG
+          
+          echo "image=$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$COMBINED_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Build and Push Frontend Image
+        id: build-frontend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REACT_APP_API_URL: http://backend-service.talk2me.svc.cluster.local
+        run: |
+          # Find the frontend Dockerfile
+          FRONTEND_DOCKERFILE=$(find . -type f -name "Dockerfile" -path "*/frontend/*" | head -1)
+          
+          if [ -z "$FRONTEND_DOCKERFILE" ]; then
+            echo "Error: Could not find a Dockerfile in the frontend directory"
+            exit 1
+          fi
+          
+          FRONTEND_DIR=$(dirname "$FRONTEND_DOCKERFILE")
+          echo "Found frontend Dockerfile at: $FRONTEND_DOCKERFILE"
+          echo "Building from directory: $FRONTEND_DIR"
+          
+          # Build and push frontend image
+          docker build "$FRONTEND_DIR" \
+            --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
+            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG
+          
+          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG
+          
+          echo "image=$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$COMBINED_TAG" >> $GITHUB_OUTPUT
+
+  deploy-to-eks:
+    name: Deploy to EKS
+    needs: build-and-push-images
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+      
+      - name: Prepare Deployment Manifests
+        env:
+          BACKEND_IMAGE: ${{ needs.build-and-push-images.outputs.backend_image }}
+          FRONTEND_IMAGE: ${{ needs.build-and-push-images.outputs.frontend_image }}
+        run: |
+          # Create Kubernetes deployment manifests
+          mkdir -p k8s
+          
+          # Backend Deployment
+          cat > k8s/backend-deployment.yaml << EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: backend
+            namespace: talk2me
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: backend
+            template:
+              metadata:
+                labels:
+                  app: backend
+              spec:
+                containers:
+                - name: backend
+                  image: $BACKEND_IMAGE
+                  ports:
+                  - containerPort: 8000
+                  env:
+                  - name: DEEPSEEK_API_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: talk2me-secrets
+                        key: deepseek-api-key
+                  resources:
+                    requests:
+                      memory: "256Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "512Mi"
+                      cpu: "500m"
+          EOF
+          
+          # Frontend Deployment
+          cat > k8s/frontend-deployment.yaml << EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: frontend
+            namespace: talk2me
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: frontend
+            template:
+              metadata:
+                labels:
+                  app: frontend
+              spec:
+                containers:
+                - name: frontend
+                  image: $FRONTEND_IMAGE
+                  ports:
+                  - containerPort: 80
+                  resources:
+                    requests:
+                      memory: "128Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "256Mi"
+                      cpu: "300m"
+          EOF
+          
+          # Backend Service
+          cat > k8s/backend-service.yaml << EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: backend-service
+            namespace: talk2me
+          spec:
+            selector:
+              app: backend
+            ports:
+            - port: 80
+              targetPort: 8000
+            type: ClusterIP
+          EOF
+          
+          # Frontend Service
+          cat > k8s/frontend-service.yaml << EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: frontend-service
+            namespace: talk2me
+            annotations:
+              service.beta.kubernetes.io/aws-load-balancer-type: nlb
+              service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+          spec:
+            type: LoadBalancer
+            selector:
+              app: frontend
+            ports:
+            - port: 80
+              targetPort: 80
+          EOF
+          
+          # Ingress Configuration
+          cat > k8s/ingress.yaml << EOF
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: talk2me-ingress
+            namespace: talk2me
+            annotations:
+              kubernetes.io/ingress.class: alb
+              alb.ingress.kubernetes.io/scheme: internet-facing
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+          spec:
+            rules:
+            - http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: frontend-service
+                      port:
+                        number: 80
+          EOF
+
+      - name: Deploy to Kubernetes
+        run: |
+          # Apply Kubernetes manifests
+          kubectl apply -f k8s/backend-deployment.yaml
+          kubectl apply -f k8s/frontend-deployment.yaml
+          kubectl apply -f k8s/backend-service.yaml
+          kubectl apply -f k8s/frontend-service.yaml
+          kubectl apply -f k8s/ingress.yaml
+
+      - name: Verify Deployment
+        run: |
+          # Wait for deployments to be ready
+          kubectl rollout status deployment/backend -n talk2me
+          kubectl rollout status deployment/frontend -n talk2me
+
+          # Display service information
+          kubectl get services -n talk2me
+          kubectl get ingress -n talk2me
