@@ -81,6 +81,19 @@ jobs:
           echo "COMBINED_TAG=$COMBINED_TAG" >> $GITHUB_ENV
           echo "combined_tag=$COMBINED_TAG" >> $GITHUB_OUTPUT
       
+      - name: Generate short SHA for tag
+        id: sha-tag
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "Creating image tag with: $SHORT_SHA"
+          echo "sha_short=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "SHA_SHORT=$SHORT_SHA" >> $GITHUB_ENV
+          
+          # Set IMAGE_TAG to "latest" if no specific tag is requested
+          if [ -z "$IMAGE_TAG" ]; then
+            echo "IMAGE_TAG=latest" >> $GITHUB_ENV
+          fi
+
       - name: Setup Docker with experimental features
         run: |
           # Enable Docker experimental features to use --squash
@@ -99,16 +112,36 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           # Delete all images with the target tags from ECR
-          echo "Removing existing images from ECR for $BACKEND_ECR_REPOSITORY:$IMAGE_TAG..."
+          echo "Removing existing images from ECR for $BACKEND_ECR_REPOSITORY..."
           aws ecr batch-delete-image \
             --repository-name $BACKEND_ECR_REPOSITORY \
             --image-ids imageTag=$IMAGE_TAG \
             2>/dev/null || true
             
-          echo "Removing existing images from ECR for $FRONTEND_ECR_REPOSITORY:$IMAGE_TAG..."
+          aws ecr batch-delete-image \
+            --repository-name $BACKEND_ECR_REPOSITORY \
+            --image-ids imageTag=$SHA_SHORT \
+            2>/dev/null || true
+            
+          aws ecr batch-delete-image \
+            --repository-name $BACKEND_ECR_REPOSITORY \
+            --image-ids imageTag=$COMBINED_TAG \
+            2>/dev/null || true
+            
+          echo "Removing existing images from ECR for $FRONTEND_ECR_REPOSITORY..."
           aws ecr batch-delete-image \
             --repository-name $FRONTEND_ECR_REPOSITORY \
             --image-ids imageTag=$IMAGE_TAG \
+            2>/dev/null || true
+            
+          aws ecr batch-delete-image \
+            --repository-name $FRONTEND_ECR_REPOSITORY \
+            --image-ids imageTag=$SHA_SHORT \
+            2>/dev/null || true
+            
+          aws ecr batch-delete-image \
+            --repository-name $FRONTEND_ECR_REPOSITORY \
+            --image-ids imageTag=$COMBINED_TAG \
             2>/dev/null || true
           
           # Clean up any local Docker images to ensure fresh build
@@ -144,20 +177,31 @@ jobs:
           RUN echo "Build ID: $BUILD_ID" > /build-id
           EOF
           
-          # Export image name for use in job outputs
-          BACKEND_IMAGE="$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY:$IMAGE_TAG"
-          
-          # Build with squash option to combine all layers into one
+          # Build once with squash option to combine all layers into one
+          # We'll tag with both the user-specified tag and SHA tags
+          echo "Building backend image with squash..."
+          BACKEND_IMAGE_BASE="$ECR_REGISTRY/$BACKEND_ECR_REPOSITORY"
           docker build --no-cache --force-rm --squash \
             -f "${BACKEND_DIR}/Dockerfile.rebuild" \
-            -t $BACKEND_IMAGE \
+            -t $BACKEND_IMAGE_BASE:$IMAGE_TAG \
+            -t $BACKEND_IMAGE_BASE:$SHA_SHORT \
+            -t $BACKEND_IMAGE_BASE:$COMBINED_TAG \
             "$BACKEND_DIR"
           
-          # Push to ECR
-          docker push $BACKEND_IMAGE
+          # Push all tags separately to avoid reusing layers between pushes
+          echo "Pushing backend image tags..."
+          docker push $BACKEND_IMAGE_BASE:$IMAGE_TAG
+          # Untag and retag locally to ensure totally separate push
+          docker rmi $BACKEND_IMAGE_BASE:$SHA_SHORT
+          docker tag $BACKEND_IMAGE_BASE:$IMAGE_TAG $BACKEND_IMAGE_BASE:$SHA_SHORT
+          docker push $BACKEND_IMAGE_BASE:$SHA_SHORT
+          # Same for combined tag
+          docker rmi $BACKEND_IMAGE_BASE:$COMBINED_TAG
+          docker tag $BACKEND_IMAGE_BASE:$IMAGE_TAG $BACKEND_IMAGE_BASE:$COMBINED_TAG
+          docker push $BACKEND_IMAGE_BASE:$COMBINED_TAG
           
-          # Output image reference for deployment
-          echo "image=$BACKEND_IMAGE" >> $GITHUB_OUTPUT
+          # Output image reference for deployment - use combined tag for better traceability
+          echo "image=$BACKEND_IMAGE_BASE:$COMBINED_TAG" >> $GITHUB_OUTPUT
       
       - name: Build and Push Frontend Image
         id: build-frontend
@@ -189,21 +233,32 @@ jobs:
           RUN echo "Build ID: $BUILD_ID" > /build-id
           EOF
           
-          # Export image name for use in job outputs
-          FRONTEND_IMAGE="$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY:$IMAGE_TAG"
-          
-          # Build with squash option to combine all layers into one
+          # Build once with squash option to combine all layers into one
+          # We'll tag with both the user-specified tag and SHA tags
+          echo "Building frontend image with squash..."
+          FRONTEND_IMAGE_BASE="$ECR_REGISTRY/$FRONTEND_ECR_REPOSITORY"
           docker build --no-cache --force-rm --squash \
             -f "${FRONTEND_DIR}/Dockerfile.rebuild" \
             --build-arg REACT_APP_API_URL=$REACT_APP_API_URL \
-            -t $FRONTEND_IMAGE \
+            -t $FRONTEND_IMAGE_BASE:$IMAGE_TAG \
+            -t $FRONTEND_IMAGE_BASE:$SHA_SHORT \
+            -t $FRONTEND_IMAGE_BASE:$COMBINED_TAG \
             "$FRONTEND_DIR"
           
-          # Push to ECR
-          docker push $FRONTEND_IMAGE
+          # Push all tags separately to avoid reusing layers between pushes
+          echo "Pushing frontend image tags..."
+          docker push $FRONTEND_IMAGE_BASE:$IMAGE_TAG
+          # Untag and retag locally to ensure totally separate push
+          docker rmi $FRONTEND_IMAGE_BASE:$SHA_SHORT
+          docker tag $FRONTEND_IMAGE_BASE:$IMAGE_TAG $FRONTEND_IMAGE_BASE:$SHA_SHORT
+          docker push $FRONTEND_IMAGE_BASE:$SHA_SHORT
+          # Same for combined tag
+          docker rmi $FRONTEND_IMAGE_BASE:$COMBINED_TAG
+          docker tag $FRONTEND_IMAGE_BASE:$IMAGE_TAG $FRONTEND_IMAGE_BASE:$COMBINED_TAG
+          docker push $FRONTEND_IMAGE_BASE:$COMBINED_TAG
           
-          # Output image reference for deployment
-          echo "image=$FRONTEND_IMAGE" >> $GITHUB_OUTPUT
+          # Output image reference for deployment - use combined tag for better traceability
+          echo "image=$FRONTEND_IMAGE_BASE:$COMBINED_TAG" >> $GITHUB_OUTPUT
       
       - name: Summary of Build Step
         run: |
@@ -339,8 +394,14 @@ jobs:
       
       - name: Create Frontend Deployment Template
         run: |
-          # Set variables for image references - using the same tag as backend for consistency
-          FRONTEND_IMAGE="${{ needs.build-and-push-images.outputs.aws_account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.FRONTEND_ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          # Set variables for image references using a hardcoded tag
+          # Get the AWS account ID for the image reference
+          AWS_ACCOUNT_ID="${{ needs.build-and-push-images.outputs.aws_account_id }}"
+          
+          # Create the full image reference with no template variables
+          FRONTEND_IMAGE="${AWS_ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.FRONTEND_ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          
+          echo "Using frontend image: $FRONTEND_IMAGE"
           
           # Create frontend deployment manifest
           cat > k8s/frontend-deployment.yaml << EOF
@@ -349,11 +410,18 @@ jobs:
           metadata:
             name: talk2me-frontend
             namespace: talk2me
+            annotations:
+              kubernetes.io/change-cause: "Build from commit ${{ env.SHA_SHORT }} at $(date)"
           spec:
             replicas: 2
             selector:
               matchLabels:
                 app: talk2me-frontend
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 1
+                maxUnavailable: 0
             template:
               metadata:
                 labels:
@@ -388,6 +456,7 @@ jobs:
                     periodSeconds: 20
                     timeoutSeconds: 5
                     failureThreshold: 6
+                imagePullPolicy: Always
           EOF
           
           # Create frontend service manifest
@@ -479,16 +548,44 @@ jobs:
               --dry-run=client -o yaml | kubectl apply -f -
           fi
           
+          # First check if deployments already exist
+          if kubectl get deployment talk2me-backend -n talk2me &>/dev/null; then
+            echo "Deleting existing backend deployment to avoid update conflicts..."
+            kubectl delete deployment talk2me-backend -n talk2me
+            sleep 5
+          fi
+          
+          if kubectl get deployment talk2me-frontend -n talk2me &>/dev/null; then
+            echo "Deleting existing frontend deployment to avoid update conflicts..."
+            kubectl delete deployment talk2me-frontend -n talk2me
+            sleep 5
+          fi
+          
           # Apply backend configurations
+          echo "Applying backend deployment..."
           kubectl apply -f k8s/backend-deployment.yaml
+          
+          echo "Applying backend service..."
           kubectl apply -f k8s/backend-service.yaml
           
           # Apply frontend configurations
+          echo "Applying frontend deployment..."
           kubectl apply -f k8s/frontend-deployment.yaml
+          
+          echo "Applying frontend service..."
           kubectl apply -f k8s/frontend-service.yaml
           
           # Apply ingress configuration
+          echo "Applying ingress..."
           kubectl apply -f k8s/ingress.yaml
+          
+          # Wait for pods to start being created
+          echo "Waiting for pods to start being created..."
+          sleep 10
+          
+          # Check pod creation status
+          echo "Initial pod status:"
+          kubectl get pods -n talk2me
       
       - name: Wait for deployments to be ready
         id: wait-deployments
@@ -513,75 +610,73 @@ jobs:
         run: |
           echo "WARNING: Checking deployment status..."
           
-          # Get pod statuses directly without relying on outputs from previous steps
-          BACKEND_PODS=$(kubectl get pods -n talk2me -l app=talk2me-backend -o jsonpath='{.items[*].status.phase}')
-          FRONTEND_PODS=$(kubectl get pods -n talk2me -l app=talk2me-frontend -o jsonpath='{.items[*].status.phase}')
+          # Get Kubernetes events first to see what's happening
+          echo "==== Recent Kubernetes Events ===="
+          kubectl get events -n talk2me --sort-by='.lastTimestamp' | tail -30
           
-          echo "Backend pods status: $BACKEND_PODS"
-          echo "Frontend pods status: $FRONTEND_PODS"
+          # Check pod status and get detailed information
+          echo "==== Pod Status ===="
+          kubectl get pods -n talk2me -o wide
           
-          # Check if all backend pods are 'Running'
-          if [[ "$BACKEND_PODS" == *"Running"* ]] && [[ ! "$BACKEND_PODS" == *"Pending"* ]] && [[ ! "$BACKEND_PODS" == *"Failed"* ]]; then
-            echo "Backend status: READY"
-            BACKEND_READY="true"
+          # Check for failing pods and get their logs
+          echo "==== Checking Logs for Failing Pods ===="
+          FAILING_PODS=$(kubectl get pods -n talk2me -o jsonpath='{.items[?(@.status.phase!="Running")].metadata.name}')
+          
+          if [ -n "$FAILING_PODS" ]; then
+            echo "Found failing pods: $FAILING_PODS"
+            for pod in $FAILING_PODS; do
+              echo "==== Details for pod $pod ===="
+              kubectl describe pod $pod -n talk2me
+              
+              # Try to get logs with various fallbacks
+              echo "==== Logs from $pod (if available) ===="
+              kubectl logs $pod -n talk2me || echo "No current logs available"
+              
+              echo "==== Previous logs from $pod (if available) ===="
+              kubectl logs $pod -n talk2me --previous || echo "No previous logs available"
+              
+              # Get init container logs if applicable
+              INIT_CONTAINERS=$(kubectl get pod $pod -n talk2me -o jsonpath='{.spec.initContainers[*].name}' 2>/dev/null)
+              if [ -n "$INIT_CONTAINERS" ]; then
+                for container in $INIT_CONTAINERS; do
+                  echo "==== Init container logs: $container ===="
+                  kubectl logs $pod -n talk2me -c $container || echo "No logs available for init container"
+                done
+              fi
+            done
           else
-            echo "Backend status: NOT READY"
-            BACKEND_READY="false"
+            echo "No failing pods found"
           fi
           
-          # Check if all frontend pods are 'Running'
-          if [[ "$FRONTEND_PODS" == *"Running"* ]] && [[ ! "$FRONTEND_PODS" == *"Pending"* ]] && [[ ! "$FRONTEND_PODS" == *"Failed"* ]]; then
-            echo "Frontend status: READY"
-            FRONTEND_READY="true"
+          # Delete pods to force recreation
+          echo "==== Forcing pod recreation ===="
+          kubectl delete pods -n talk2me -l app=talk2me-backend --grace-period=1 || echo "No backend pods to delete"
+          kubectl delete pods -n talk2me -l app=talk2me-frontend --grace-period=1 || echo "No frontend pods to delete"
+          
+          # Check secrets
+          echo "==== Verifying secrets ===="
+          kubectl get secrets -n talk2me
+          
+          # Check if secret exists but don't show the value
+          if kubectl get secret talk2me-secrets -n talk2me &>/dev/null; then
+            echo "talk2me-secrets exists in the namespace"
+            # Validate secret keys without showing values
+            SECRET_KEYS=$(kubectl get secret talk2me-secrets -n talk2me -o jsonpath='{.data}' | jq -r 'keys[]')
+            echo "Secret keys found: $SECRET_KEYS"
           else
-            echo "Frontend status: NOT READY"
-            FRONTEND_READY="false"
+            echo "ERROR: talk2me-secrets doesn't exist in the namespace - this could cause startup failures"
           fi
           
-          # Check for any potential issues if pods aren't ready
-          if [[ "$BACKEND_READY" == "false" ]] || [[ "$FRONTEND_READY" == "false" ]]; then
-            echo "Continuing with ingress setup, but the application may not be fully functional."
-            echo "Checking for common deployment issues..."
-            
-            # Check if pods were created
-            echo "Pod status:"
-            kubectl get pods -n talk2me -o wide
-            
-            # Check node capacity
-            echo "Node status:"
-            kubectl get nodes
-            
-            # Check for any events
-            echo "Recent events:"
-            kubectl get events -n talk2me --sort-by='.lastTimestamp' | tail -20
-            
-            # Check for any errors in logs of non-running pods
-            echo "Checking logs of problematic pods:"
-            
-            # Get failing pods
-            FAILING_PODS=$(kubectl get pods -n talk2me -o jsonpath='{.items[?(@.status.phase!="Running")].metadata.name}')
-            
-            if [ -n "$FAILING_PODS" ]; then
-              echo "Found failing pods: $FAILING_PODS"
-              for pod in $FAILING_PODS; do
-                echo "==== Details for pod $pod ===="
-                kubectl describe pod $pod -n talk2me
-                echo "==== Logs from $pod (if available) ===="
-                kubectl logs $pod -n talk2me --previous || kubectl logs $pod -n talk2me || echo "No logs available"
-              done
-            fi
-            
-            # Check secrets
-            echo "Verifying secrets:"
-            kubectl get secrets -n talk2me
-            
-            # Check if secret exists but don't show the value
-            if kubectl get secret talk2me-secrets -n talk2me &>/dev/null; then
-              echo "talk2me-secrets exists in the namespace"
-            else
-              echo "ERROR: talk2me-secrets doesn't exist in the namespace - this could cause startup failures"
-            fi
-          fi
+          # Give the pods time to recreate
+          echo "Waiting for pods to recreate (30 seconds)..."
+          sleep 30
+          
+          # Check new pod status
+          echo "==== New Pod Status ===="
+          kubectl get pods -n talk2me
+          
+          # Continue the workflow regardless
+          echo "Proceeding with ingress setup regardless of pod status"
       
       - name: Wait for ingress and load balancer
         id: get-lb
